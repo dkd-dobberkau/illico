@@ -1079,7 +1079,7 @@ def compile(
         if not raw_files:
             console.print(
                 "[red]✗ Keine Raw-Dateien fuer diese Domains. "
-                "Erst illico_ingest.py fuer diese Domains laufen lassen.[/red]"
+                "Erst `python -m illico_ingest` fuer diese Domains laufen lassen.[/red]"
             )
             raise typer.Exit(1)
 

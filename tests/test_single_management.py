@@ -47,7 +47,7 @@ def test_ingest_argv_ohne_tenant(client, monkeypatch, tmp_path):
     with patch("illico_single._run_job", new=fake_run):
         client.post("/api/ingest", json={"url": "https://x.io", "depth": 3})
     a = captured["argv"]
-    assert "illico_ingest.py" in a and "https://x.io" in a
+    assert "-m" in a and "illico_ingest" in a and "https://x.io" in a
     assert "--depth" in a and "3" in a
     assert "--tenant" not in a and "--only-domains" not in a
 
@@ -62,7 +62,7 @@ def test_compile_argv_ohne_tenant(client, monkeypatch):
     with patch("illico_single._run_job", new=fake_run):
         client.post("/api/compile", json={"lint_only": True, "lang": "de"})
     a = captured["argv"]
-    assert "illico_compile.py" in a and "--lint" in a
+    assert "-m" in a and "illico_compile" in a and "--lint" in a
     assert "--lang" in a and "de" in a and "--tenant" not in a
 
 
@@ -76,7 +76,7 @@ def test_graph_rebuild_argv(client, monkeypatch):
     with patch("illico_single._run_job", new=fake_run):
         client.post("/api/graph/rebuild", json={})
     a = captured["argv"]
-    assert "illico_compile.py" in a and "--graph-only" in a and "--tenant" not in a
+    assert "-m" in a and "illico_compile" in a and "--graph-only" in a and "--tenant" not in a
 
 
 def test_delete_raw_global(client, monkeypatch, tmp_path):

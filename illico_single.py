@@ -97,7 +97,7 @@ async def api_ingest(req: SingleIngestRequest):
     import illico_app  # lazy: bricht Import-Zyklus (siehe Modulkopf)
     job_id = f"ingest-{int(datetime.now().timestamp())}"
     _new_job(job_id, "ingest", url=req.url)
-    argv = [sys.executable, "illico_ingest.py", "ingest", req.url,
+    argv = [sys.executable, "-m", "illico_ingest", "ingest", req.url,
             "--depth", str(req.depth), "--data", str(illico_app.DATA_DIR)]
     asyncio.create_task(_run_job(job_id, argv))
     return {"status": "started", "job_id": job_id, "url": req.url}
@@ -108,7 +108,7 @@ async def api_compile(req: SingleCompileRequest):
     import illico_app  # lazy: bricht Import-Zyklus (siehe Modulkopf)
     job_id = f"compile-{int(datetime.now().timestamp())}"
     _new_job(job_id, "compile")
-    argv = [sys.executable, "illico_compile.py", "--data", str(illico_app.DATA_DIR),
+    argv = [sys.executable, "-m", "illico_compile", "--data", str(illico_app.DATA_DIR),
             "--model", illico_llm.ANSWER_MODEL]
     if req.lint_only:
         argv.append("--lint")
@@ -123,7 +123,7 @@ async def api_graph_rebuild(req: SingleGraphRequest):
     import illico_app  # lazy: bricht Import-Zyklus (siehe Modulkopf)
     job_id = f"graph-{int(datetime.now().timestamp())}"
     _new_job(job_id, "graph", lang=req.lang or "")
-    argv = [sys.executable, "illico_compile.py", "--data", str(illico_app.DATA_DIR),
+    argv = [sys.executable, "-m", "illico_compile", "--data", str(illico_app.DATA_DIR),
             "--model", illico_llm.ANSWER_MODEL, "--graph-only"]
     if req.lang:
         argv += ["--lang", req.lang]

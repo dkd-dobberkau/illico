@@ -2,6 +2,15 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.2.1 — Fix: Web-Verwaltung bei pip-Installation
+
+- **Fix:** Die Web-Verwaltung (Crawlen/Kompilieren/Graph über die Oberfläche)
+  startete die Kern-CLIs per Dateiname (`illico_ingest.py`), was nur aus einem
+  Quell-Checkout funktionierte — bei `pip install illico` lagen die Module in
+  site-packages und die Aufrufe brachen mit „can't open file". Jetzt paket-sicher
+  über `python -m illico_ingest` / `python -m illico_compile` (CWD-unabhängig).
+- Kleinere Korrektur eines veralteten Hinweis-Textes im Compiler.
+
 ## v0.2.0 — eigenes Single-Frontend + Web-Verwaltung
 
 - **Eigenes, schlankes Single-Frontend** (`illico_index.html`): Chat, Wiki-Browsen,
