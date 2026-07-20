@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "illico"
+version = "0.2.0"
+description = "Websites in eine abfragbare Wissensbasis verwandeln — crawl, compile-to-wiki, chat. Kein RAG, keine Vektor-DB."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+  "litellm>=1.40,<2.0",
+  "fastapi>=0.121,<1.0",
+  "uvicorn[standard]>=0.32,<0.40",
+  "pydantic>=2.9,<3.0",
+  "httpx>=0.27,<0.30",
+  "trafilatura>=2.0,<3.0",
+  "beautifulsoup4>=4.12,<5.0",
+  "lxml>=6.1,<7.0",
+  "typer>=0.15,<0.20",
+  "rich>=13.9,<15.0",
+  "python-dotenv>=1.0,<2.0",
+  "langdetect>=1.0.9,<2.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0,<9.0", "pytest-asyncio>=0.24,<1.0"]
+
+[project.scripts]
+illico-ingest = "illico_ingest:app"
+illico-compile = "illico_compile:app"
+illico-chat = "illico_chat:app"
+illico-serve = "illico_app:cli"
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+only-include = [
+  "illico_ingest.py", "illico_compile.py", "illico_chat.py", "illico_chat_core.py",
+  "illico_graph.py", "illico_llm.py", "illico_canonicalize.py", "illico_crawl_status.py",
+  "illico_frontmatter.py", "illico_context.py", "illico_app.py", "illico_single.py",
+  "illico_testing.py",
+]
+sources = ["."]
+force-include = { "illico_index.html" = "illico_index.html" }

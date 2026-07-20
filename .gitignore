@@ -1,0 +1,10 @@
+illico-data/
+.venv/
+.venv-pub/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.superpowers/
