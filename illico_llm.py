@@ -39,6 +39,10 @@ _RETRYABLE = tuple(filter(None, [
     getattr(litellm, "APIConnectionError", None),
     getattr(litellm, "ServiceUnavailableError", None),
     getattr(litellm, "Timeout", None),
+    # Anthropic 529 overloaded_error surfaces as InternalServerError (HTTP 5xx);
+    # transient/retryable per Anthropic docs. Without this, large compiles die
+    # mid-run on provider overload (Deutz-Tenant never compiled).
+    getattr(litellm, "InternalServerError", None),
 ]))
 
 

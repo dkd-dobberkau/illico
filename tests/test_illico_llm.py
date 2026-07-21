@@ -1,6 +1,7 @@
 """Unit tests for illico_llm — mocks litellm, never makes real API calls."""
 from unittest.mock import MagicMock, patch
 
+import litellm
 import pytest
 
 import illico_llm
@@ -69,6 +70,25 @@ def test_call_sync_raises_after_all_retries_exhausted():
          patch("illico_llm.time.sleep"):
         with pytest.raises(FakeRateLimitError):
             illico_llm.call_sync("test-model", [{"role": "user", "content": "hi"}], retries=2)
+
+
+def test_internal_server_error_is_retryable():
+    """Anthropic 529 overloaded_error surfaces as litellm.InternalServerError."""
+    assert litellm.InternalServerError in illico_llm._RETRYABLE
+
+
+def test_call_sync_retries_on_internal_server_error():
+    """529 overloaded_error must retry, not crash the compile (Deutz bug)."""
+    err = litellm.InternalServerError(
+        "overloaded", model="test-model", llm_provider="anthropic"
+    )
+    with patch("illico_llm.litellm.completion") as mock_comp, \
+         patch("illico_llm.time.sleep"):
+        mock_comp.side_effect = [err, _ok_response("ok")]
+        result = illico_llm.call_sync("test-model", [{"role": "user", "content": "hi"}])
+
+    assert result == "ok"
+    assert mock_comp.call_count == 2
 
 
 def test_call_sync_raises_llm_auth_error_on_auth_failure():

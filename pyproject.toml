@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "illico"
-version = "0.2.1"
+version = "0.2.2"
 description = "Websites in eine abfragbare Wissensbasis verwandeln — crawl, compile-to-wiki, chat. Kein RAG, keine Vektor-DB."
 readme = "README.md"
 license = { text = "MIT" }

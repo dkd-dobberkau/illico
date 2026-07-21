@@ -2,6 +2,15 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.2.2 — Fix: Compile überlebt Anthropic-Überlast (HTTP 529)
+
+- **Fix:** Große Compiles brachen bei transienter Provider-Überlast hart ab, statt
+  zu retryen. Anthropics `529 overloaded_error` kommt bei litellm als
+  `InternalServerError` an — der fehlte in der Retryable-Liste (`illico_llm._RETRYABLE`),
+  sodass der Fehler bis nach oben durchschlug und den Compile mittendrin killte.
+  Jetzt wird `InternalServerError` mit Exponential-Backoff wiederholt (transient/
+  retrybar laut Anthropic-Doku). 2 neue Tests decken Membership und Retry-Verhalten ab.
+
 ## v0.2.1 — Fix: Web-Verwaltung bei pip-Installation
 
 - **Fix:** Die Web-Verwaltung (Crawlen/Kompilieren/Graph über die Oberfläche)
