@@ -94,6 +94,26 @@ def extract_links(html: str, base_url: str, allowed_domain: str) -> list[str]:
     return links
 
 
+def parse_bookmarks_html(html: str) -> list[str]:
+    """Extrahiert http(s)-URLs aus einem Netscape-Bookmarks-Export.
+
+    Reihenfolgetreu dedupliziert; Nicht-Web-Schemata (javascript:, place:,
+    chrome://, data:, …) werden verworfen. Ordnerstruktur wird flach ignoriert.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    urls: list[str] = []
+    seen: set[str] = set()
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href.lower().startswith(("http://", "https://")):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        urls.append(href)
+    return urls
+
+
 def find_markdown_alternate(html: str, base_url: str) -> Optional[str]:
     """Sucht nach <link rel="alternate" type="text/markdown"> im HTML."""
     soup = BeautifulSoup(html, "lxml")
