@@ -2,6 +2,21 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.2.3 — Collection-/Bookmark-Modus, Docker-Compose, englische README
+
+- **Neuer Ingest-Modus `collection`:** Statt eine Domain zu crawlen, verarbeitet
+  `illico-ingest collection <bookmarks.html>` eine kuratierte URL-Liste aus einem
+  Browser-Bookmarks-Export (Netscape-HTML). Jede URL wird genau einmal geholt (kein
+  BFS), domain-präfixiert unter `raw/<domain>/…` abgelegt. Optionen analog zu
+  `ingest` (`--data`, `--delay`, `--fresh`, `--lang`, `--max-pages`). Der bestehende
+  Domain-Crawl bleibt unverändert.
+- **Docker-Compose:** `docker-compose.yml` + `.dockerignore` für turnkey Self-Hosting
+  — die ganze Pipeline (Crawl/Collection → Compile → Web-UI) im selben Image gegen
+  ein persistentes `./illico-data`, Key über `.env`.
+- **Englische README** (`README.en.md`, WIP) mit Hinweis, dass die deutsche README
+  die maßgebliche Fassung ist. Kleiner Bugfix im deutschen Usage-Beispiel
+  (`illico-ingest` braucht den `ingest`-Subcommand).
+
 ## v0.2.2 — Fix: Compile überlebt Anthropic-Überlast (HTTP 529)
 
 - **Fix:** Große Compiles brachen bei transienter Provider-Überlast hart ab, statt
