@@ -586,6 +586,77 @@ def crawl(
     return results
 
 
+def collect(
+    urls: list[str],
+    output_dir: Path,
+    delay: float = 0.5,
+    fresh: bool = False,
+    target_langs: Optional[list[str]] = None,
+    max_pages: Optional[int] = None,
+) -> dict:
+    """Holt eine kuratierte URL-Liste (je URL einmal, kein BFS) und speichert
+    Markdown domain-präfixiert in raw/<domain>/…. Reine Liste — keine Sitemap,
+    keine Adaptiv-Drossel, kein Block-Status."""
+    raw_dir = output_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    history = load_history(output_dir) if not fresh else {"urls": {}}
+    previously = set(history["urls"].keys())
+    results = {"success": [], "failed": [], "skipped": [], "cached": []}
+
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=15) as client:
+        for url in urls:
+            if url in previously:
+                results["cached"].append(url)
+                continue
+            try:
+                response = client.get(url)
+                if response.status_code != 200:
+                    results["failed"].append((url, f"HTTP {response.status_code}"))
+                    continue
+                if "text/html" not in response.headers.get("content-type", ""):
+                    results["skipped"].append(url)
+                    continue
+
+                html = response.text
+                markdown = html_to_markdown(html, url)
+                if not markdown or len(markdown.strip()) < 50:
+                    results["skipped"].append(url)
+                    continue
+
+                detected_lang = detect_language(html, markdown)
+                if target_langs and detected_lang and detected_lang not in target_langs:
+                    results["skipped"].append(url)
+                    continue
+
+                domain = urlparse(url).netloc
+                markdown = build_frontmatter(extract_title(html, url), url, domain, detected_lang) + markdown
+
+                file_path = raw_dir / domain / url_to_filename(url, url)
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                if file_path.exists():
+                    stem = file_path.stem
+                    suffix = hashlib.md5(url.encode()).hexdigest()[:6]
+                    file_path = file_path.with_stem(f"{stem}_{suffix}")
+
+                file_path.write_text(markdown, encoding="utf-8")
+                rel_path = file_path.relative_to(raw_dir)
+                results["success"].append((url, str(rel_path)))
+                history["urls"][url] = {
+                    "file": str(rel_path),
+                    "crawled": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+
+                if max_pages is not None and len(results["success"]) >= max_pages:
+                    break
+                time.sleep(delay)
+            except Exception as e:
+                results["failed"].append((url, str(e)))
+
+    save_history(output_dir, history)
+    return results
+
+
 def print_summary(results: dict, output_dir: Path):
     """Gibt eine Zusammenfassung des Crawls aus."""
     console.print()
