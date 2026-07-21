@@ -72,10 +72,34 @@ Datenverzeichnis anzugeben.
 
 ## Docker
 
+Illico Single läuft komplett über Docker Compose — die ganze Pipeline
+(Crawl → Compile → Web-UI) im selben Image gegen ein persistentes
+Datenverzeichnis `./illico-data`, ohne lokale Python-Installation:
+
 ```bash
-docker build -t illico .
-docker run -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... -v $(pwd)/illico-data:/app/illico-data illico
+cp .env.example .env        # ANTHROPIC_API_KEY eintragen
+mkdir -p illico-data        # auf Linux: muss für uid 1000 schreibbar sein
+
+# 1. Eine Site crawlen (One-Shot)
+docker compose run --rm illico illico-ingest ingest https://example.com --depth 1
+
+# 2. Wiki kompilieren (One-Shot)
+docker compose run --rm illico illico-compile
+
+# 3. Web-UI starten
+docker compose up -d        # → http://localhost:8000
 ```
+
+`ingest` und `compile` sind einmalige Jobs (`run --rm`), `up -d` startet den
+langlaufenden Web-Server. Das Wiki liegt als lesbares Markdown unter
+`./illico-data/wiki/` — direkt editier- und git-versionierbar.
+
+**Hinweise:**
+- **Sicherheit:** Illico Single ist login-frei. Binde den Port nur an localhost
+  oder stelle die App hinter einen Reverse-Proxy mit Zugriffsschutz, wenn sie
+  öffentlich erreichbar sein soll.
+- **Linux:** Der Container läuft als uid 1000 — stelle sicher, dass `./illico-data`
+  für diese uid schreibbar ist (auf macOS/Docker Desktop irrelevant).
 
 ## Datenverzeichnis
 
