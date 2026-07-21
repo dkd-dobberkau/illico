@@ -1,5 +1,8 @@
 # Illico
 
+> **English:** [README.en.md](README.en.md) (work in progress). Diese deutsche
+> Fassung ist die maßgebliche Version.
+
 Illico verwandelt Websites in eine abfragbare Wissensbasis, die von einem LLM
 beantwortet wird — **kein RAG, keine Vektor-Datenbank**. Illico crawlt eine
 Site, speichert die Seiten als Markdown und lässt ein LLM daraus ein
@@ -53,7 +56,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ```bash
 # 1. Website crawlen
-illico-ingest https://example.com --depth 2
+illico-ingest ingest https://example.com --depth 2
 
 # 2. Wiki aus den gecrawlten Seiten kompilieren
 illico-compile
