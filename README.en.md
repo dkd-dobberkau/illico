@@ -70,6 +70,21 @@ illico-serve
 
 All commands accept `--data ./illico-data` (default) to set the data directory.
 
+### Collection mode (bookmarks instead of crawl)
+
+Instead of crawling an entire domain, Illico can process a curated URL list from
+a browser bookmarks export (Netscape HTML, Chrome/Firefox/Safari) — each URL is
+fetched exactly once, without following links:
+
+```bash
+illico-ingest collection bookmarks.html
+illico-ingest collection bookmarks.html --lang en   # keep English pages only
+```
+
+Pages are stored domain-prefixed under `raw/<domain>/…` and then compiled into
+the wiki with `illico-compile` as usual. Options mirror `ingest`: `--data`,
+`--delay`, `--fresh`, `--lang`, `--max-pages`.
+
 ## Docker
 
 Illico Single runs entirely via Docker Compose — the whole pipeline
