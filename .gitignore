@@ -1,4 +1,6 @@
 illico-data/
+.env
+!.env.example
 .venv/
 .venv-pub/
 __pycache__/

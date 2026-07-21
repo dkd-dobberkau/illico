@@ -1,0 +1,11 @@
+services:
+  illico:
+    build: .
+    container_name: illico-single
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./illico-data:/app/illico-data
+    restart: unless-stopped
