@@ -740,6 +740,45 @@ def ingest(
     print_summary(results, data)
 
 
+@app.command()
+def collection(
+    source: Path = typer.Argument(..., help="Bookmarks-HTML-Export (Netscape-Format)"),
+    data: Path = typer.Option(Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d", help="Illico-Datenverzeichnis"),
+    delay: float = typer.Option(0.5, "--delay", help="Pause zwischen Requests in Sekunden"),
+    fresh: bool = typer.Option(False, "--fresh", help="Ignoriere Cache, alles neu holen"),
+    lang: Optional[str] = typer.Option(None, "--lang", help="Nur Seiten dieser Sprache(n) behalten, ISO 639-1 kommagetrennt"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Harte Obergrenze fuer neu gespeicherte Seiten"),
+):
+    """
+    Holt eine kuratierte URL-Liste aus einem Browser-Bookmarks-Export und
+    speichert jede Seite als Markdown in raw/ (kein Crawl, je URL einmal).
+    """
+    if not source.is_file():
+        console.print(f"[red]Bookmarks-Datei nicht gefunden: {source}[/red]")
+        raise typer.Exit(code=1)
+
+    urls = parse_bookmarks_html(source.read_text(encoding="utf-8", errors="ignore"))
+
+    console.print()
+    console.rule("[bold blue]ILLICO COLLECTION[/bold blue]")
+    console.print(f"  Quelle: [cyan]{source}[/cyan]")
+    console.print(f"  URLs:   [cyan]{len(urls)} aus Bookmarks[/cyan]")
+    console.print(f"  Data:   [cyan]{data}[/cyan]")
+
+    if not urls:
+        console.print("[yellow]Keine http(s)-URLs im Export gefunden.[/yellow]")
+        raise typer.Exit(code=0)
+
+    target_langs: Optional[list[str]] = None
+    if lang:
+        target_langs = [l.strip().lower() for l in lang.split(",") if l.strip()]
+        console.print(f"  Sprache: [cyan]{', '.join(target_langs)}[/cyan]")
+    console.print()
+
+    results = collect(urls, data, delay=delay, fresh=fresh, target_langs=target_langs, max_pages=max_pages)
+    print_summary(results, data)
+
+
 @app.command(name="migrate-lang")
 def migrate_lang_cmd(
     data: Path = typer.Option(Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d", help="Illico-Datenverzeichnis"),

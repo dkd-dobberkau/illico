@@ -2,6 +2,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from typer.testing import CliRunner
+
 import illico_ingest
 
 
@@ -101,3 +103,34 @@ def test_collect_records_non_200_as_failed(tmp_path):
 
     assert results["failed"] and results["failed"][0][0] == url
     assert results["success"] == []
+
+
+def test_collection_command_ingests_bookmarks(tmp_path, monkeypatch):
+    bm = tmp_path / "lesezeichen.html"
+    bm.write_text(BOOKMARKS_HTML, encoding="utf-8")
+
+    captured = {}
+
+    def fake_collect(urls, output_dir, **kwargs):
+        captured["urls"] = urls
+        captured["output_dir"] = output_dir
+        return {"success": [(u, "x.md") for u in urls], "failed": [], "skipped": [], "cached": []}
+
+    monkeypatch.setattr(illico_ingest, "collect", fake_collect)
+
+    result = CliRunner().invoke(
+        illico_ingest.app,
+        ["collection", str(bm), "--data", str(tmp_path)],
+    )
+    assert result.exit_code == 0, result.output
+    # Parser + Command reichen genau die http(s)-Bookmarks an collect weiter
+    assert captured["urls"] == ["https://example.com/a", "http://foo.org/b"]
+    assert captured["output_dir"] == tmp_path
+
+
+def test_collection_command_errors_on_missing_file(tmp_path):
+    result = CliRunner().invoke(
+        illico_ingest.app,
+        ["collection", str(tmp_path / "gibtsnicht.html")],
+    )
+    assert result.exit_code != 0
