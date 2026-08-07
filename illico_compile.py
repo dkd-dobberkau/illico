@@ -581,6 +581,18 @@ def read_raw_files(raw_dir: Path) -> dict[str, str]:
     return files
 
 
+def _distill_root(data: Path, wiki_dir: Path) -> Path:
+    """Store-Verzeichnis parallel zum Wiki: wiki-ABC → distill-ABC, wiki → distill.
+
+    Bewusst pro Tenant statt global: Domains gehoeren im Cloud-Overlay eindeutig
+    einem Mandanten, ein gemeinsamer Store braechte also keine Ersparnis, wohl
+    aber eine neue Leak-Flaeche.
+    """
+    name = wiki_dir.name
+    suffix = name[len("wiki"):] if name.startswith("wiki") else ""
+    return data / ("distill" + suffix)
+
+
 def _filter_raw_by_domains(raw_files: dict[str, str], allowed: set[str] | None) -> dict[str, str]:
     """Reduziert {rel: content} auf Files, deren Frontmatter-Domain in `allowed`
     liegt. `allowed=None` → unverändert. Files ohne erkennbare Domain fallen
@@ -958,8 +970,11 @@ def phase_articles(
     prompts: Prompts,
     call,
     jobs: int = 4,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Phase 3: Artikel schreiben — nur fuer Cluster mit geaendertem Fingerprint.
+
+    Liefert (alle Cluster als (slug, name), tatsaechlich geschriebene Slugs).
+    Der zweite Wert entscheidet, ob Index und Lint ueberhaupt laufen muessen.
 
     Es wird NICHTS pauschal geloescht. Frueher raeumte diese Phase zuerst alle
     Artikel weg, wodurch das Wiki waehrend jedes Laufs unvollstaendig und nach
@@ -1011,7 +1026,8 @@ def phase_articles(
             for future in [pool.submit(write, c) for c in todo]:
                 future.result()
 
-    return [(c["slug"], c["name"]) for c in inventory.get("clusters", [])]
+    created = [(c["slug"], c["name"]) for c in inventory.get("clusters", [])]
+    return created, [c["slug"] for c in todo]
 
 
 def phase_index(
@@ -1074,7 +1090,8 @@ def compile(
     data: Path = typer.Option(Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d", help="Illico-Datenverzeichnis"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM-Modell (default: ILLICO_ANSWER_MODEL env)"),
     lint_only: bool = typer.Option(False, "--lint", help="Nur Linting-Pass ausführen"),
-    graph_only: bool = typer.Option(False, "--graph-only", help="Nur Knowledge-Graph neu extrahieren (Phase 1b)"),
+    graph_only: bool = typer.Option(False, "--graph-only", help="Nur Knowledge-Graph aus den Destillaten neu bauen"),
+    jobs: int = typer.Option(4, "--jobs", "-j", help="Parallele LLM-Calls (Destillation, Artikel)."),
     canonicalize_only: bool = typer.Option(False, "--canonicalize-only", help="Nur Entity-Resolution über bestehenden Graph laufen lassen (kein Re-Compile)"),
     only_domains: Optional[str] = typer.Option(None, "--only-domains", help="Nur Raw-Dateien dieser Domains (Komma-getrennt) kompilieren."),
     lang: Optional[str] = typer.Option(None, "--lang", help="Nur raw/-Dateien dieser Sprache(n) ins Wiki uebernehmen, ISO 639-1 kommagetrennt (z.B. 'de' oder 'de,en')"),
@@ -1182,22 +1199,71 @@ def compile(
                 raise typer.Exit(1)
             phase_lint(wiki_dir, effective_model, prompts)
         elif graph_only:
+            from illico_distill import DistillStore, distill_all
+
             console.print(f"  Graph:   [cyan]{graph_dir}[/cyan]")
-            phase_graph(raw_files, graph_dir, effective_model, prompts)
+            distilled = distill_all(
+                raw_files, DistillStore(_distill_root(data, wiki_dir)),
+                effective_model, prompts.distill, call_llm, jobs=jobs,
+            )
+            phase_graph(distilled.distillates, graph_dir, effective_model, prompts)
         else:
-            # Vollständiger Compile-Durchlauf
-            inventory = phase_inventory(raw_files, effective_model, prompts)
+            from illico_distill import DistillStore, distill_all
+            from illico_inventory import (
+                assign_new, load_inventory, prune, save_inventory,
+            )
 
-            # Inventar speichern (für Debugging)
+            store = DistillStore(_distill_root(data, wiki_dir))
+
+            console.print("\n[bold blue]Phase 1:[/bold blue] Seiten destillieren...")
+            distilled = distill_all(
+                raw_files, store, effective_model, prompts.distill, call_llm,
+                jobs=jobs,
+            )
+            console.print(f"  [green]✓[/green] {len(distilled.distillates)} Destillate")
+            if distilled.failed:
+                console.print(
+                    f"  [yellow]⚠ {len(distilled.failed)} Seiten ohne Destillat[/yellow] — "
+                    "der naechste Lauf versucht sie erneut."
+                )
+
             inv_path = data / inv_path_name
-            inv_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Zwei getrennte Kopien: `previous` ist der Vergleichsstand fuer die
+            # Fingerprints, `inventory` wird fortgeschrieben.
+            previous = load_inventory(inv_path)
+            inventory = load_inventory(inv_path)
 
-            # Knowledge Graph extrahieren (sprachabhaengig — graph-<lang>/ bzw. graph/)
-            graph = phase_graph(raw_files, graph_dir, effective_model, prompts)
+            console.print("\n[bold blue]Phase 2:[/bold blue] Inventar fortschreiben...")
+            emptied = prune(inventory, set(distilled.distillates))
+            assign_new(
+                inventory, distilled.distillates, effective_model,
+                prompts.assign, call_llm,
+            )
+            save_inventory(inv_path, inventory)
+            console.print(f"  [green]✓[/green] {len(inventory['clusters'])} Cluster")
 
-            created = phase_articles(raw_files, inventory, wiki_dir, effective_model, prompts)
-            phase_index(inventory, created, wiki_dir, effective_model, prompts)
-            phase_lint(wiki_dir, effective_model, prompts)
+            created, written = phase_articles(
+                distilled.distillates, inventory, previous, wiki_dir,
+                effective_model, prompts, call_llm, jobs=jobs,
+            )
+
+            for slug in emptied:
+                stale = wiki_dir / f"{slug}.md"
+                if stale.exists():
+                    stale.unlink()
+
+            # Index und Lint nur, wenn sich am Artikelbestand etwas geaendert
+            # hat — sonst schrieben sie bei jedem Lauf denselben Inhalt neu und
+            # ein unveraenderter Lauf waere nie wirklich gratis.
+            if written or emptied or not (wiki_dir / "_index.md").exists():
+                phase_index(inventory, created, wiki_dir, effective_model, prompts)
+
+            phase_graph(distilled.distillates, graph_dir, effective_model, prompts)
+
+            if written or emptied or not (wiki_dir / "_lint-report.md").exists():
+                phase_lint(wiki_dir, effective_model, prompts)
+            else:
+                console.print("\n[dim]Lint uebersprungen — Artikelbestand unveraendert.[/dim]")
     except illico_llm.LLMAuthError as exc:
         console.print(f"[red]✗ LLM authentication failed: {exc}[/red]")
         console.print("  Check your provider API key and ILLICO_ANSWER_MODEL.")

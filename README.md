@@ -19,10 +19,14 @@ URL → ingest → raw/*.md → compile → wiki/*.md → chat
 
 1. **Crawl** — `illico-ingest` crawlt eine Website und schreibt jede Seite als
    Markdown-Datei (mit Frontmatter) nach `illico-data/raw/`.
-2. **Compile** — `illico-compile` lässt ein LLM die rohen Seiten thematisch
-   clustern und daraus ein verlinktes Wiki unter `illico-data/wiki/`
-   erzeugen, inklusive Einstiegspunkt (`_index.md`) und Qualitätsreport
-   (`_lint-report.md`).
+2. **Compile** — `illico-compile` verdichtet jede Rohseite zu einem Destillat
+   (Kurzfassung + Entitäten), clustert diese thematisch und erzeugt daraus ein
+   verlinktes Wiki unter `illico-data/wiki/`, inklusive Einstiegspunkt
+   (`_index.md`), Qualitätsreport (`_lint-report.md`) und Wissensgraph.
+   Der Compile ist **inkrementell**: Destillate liegen unter
+   `illico-data/distill/` und sind über den Seiteninhalt adressiert, ein
+   erneuter Lauf verarbeitet also nur geänderte Seiten. Ein Nachcrawl ohne
+   inhaltliche Änderung kostet null LLM-Aufrufe.
 3. **Chat (CLI)** — `illico-chat` ist ein interaktiver Terminal-Chat über das
    kompilierte Wiki: eine Router-LLM-Anfrage wählt relevante Artikel aus,
    eine zweite beantwortet die Frage mit diesem Kontext.
@@ -61,7 +65,9 @@ illico-ingest ingest https://example.com --depth 2
 # 2. Wiki aus den gecrawlten Seiten kompilieren
 illico-compile
 illico-compile --model claude-sonnet-4-6   # höhere Qualität
+illico-compile --jobs 8                     # mehr parallele LLM-Calls (Default 4)
 illico-compile --lint                       # nur Qualitätsprüfung
+illico-compile --graph-only                 # nur den Graph aus den Destillaten neu bauen
 
 # 3. Im Terminal über das Wiki chatten
 illico-chat
@@ -87,6 +93,18 @@ illico-ingest collection lesezeichen.html --lang de   # nur deutschsprachige Sei
 Die Seiten werden domain-präfixiert unter `raw/<domain>/…` abgelegt und
 anschließend wie gewohnt mit `illico-compile` zum Wiki kompiliert. Optionen
 analog zu `ingest`: `--data`, `--delay`, `--fresh`, `--lang`, `--max-pages`.
+
+### Vollneubau erzwingen
+
+Der Compile schreibt nur Artikel neu, deren Quellen sich geändert haben, und
+behält die einmal vergebenen Slugs bei — dadurch bleiben `[[links]]` und
+Bookmarks über Läufe hinweg gültig, die Themenstruktur altert aber mit der
+Zeit. Zwei Schalter dagegen, beides einfach Löschen:
+
+- `illico-data/distill/` löschen → alle Seiten werden neu destilliert
+  (z.B. nach einem Modellwechsel, denn der invalidiert den Cache bewusst nicht)
+- `illico-data/_inventory.json` löschen → die Themencluster werden komplett neu
+  geschnitten, alte Slugs gehen dabei verloren
 
 ## Docker
 
