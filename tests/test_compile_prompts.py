@@ -37,7 +37,8 @@ def test_get_prompts_is_frozen():
 
 def test_get_prompts_has_all_fields():
     p = get_prompts("de")
-    for field in ("inventory", "merge", "extract", "merge_graph", "canonicalize", "article", "index", "lint"):
+    for field in ("inventory", "merge", "canonicalize", "article", "index", "lint",
+                  "distill", "assign"):
         assert getattr(p, field), f"field {field!r} is empty"
 
 

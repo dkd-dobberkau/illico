@@ -533,8 +533,6 @@ Rules:
 class Prompts:
     inventory: str
     merge: str
-    extract: str
-    merge_graph: str
     canonicalize: str
     article: str
     index: str
@@ -552,8 +550,6 @@ def get_prompts(lang: str | None) -> Prompts:
         return Prompts(
             inventory=INVENTORY_PROMPT_EN,
             merge=MERGE_PROMPT_EN,
-            extract=EXTRACT_PROMPT_EN,
-            merge_graph=MERGE_GRAPH_PROMPT_EN,
             canonicalize=CANONICALIZE_PROMPT_EN,
             article=ARTICLE_PROMPT_EN,
             index=INDEX_PROMPT_EN,
@@ -564,8 +560,6 @@ def get_prompts(lang: str | None) -> Prompts:
     return Prompts(
         inventory=INVENTORY_PROMPT_DE,
         merge=MERGE_PROMPT_DE,
-        extract=EXTRACT_PROMPT_DE,
-        merge_graph=MERGE_GRAPH_PROMPT_DE,
         canonicalize=CANONICALIZE_PROMPT_DE,
         article=ARTICLE_PROMPT_DE,
         index=INDEX_PROMPT_DE,
@@ -802,41 +796,6 @@ def _inventory_fallback(raw_files: dict) -> dict:
     }
 
 
-def _extract_graph_batch(
-    batch_files: dict,
-    model: str,
-    label: str,
-    prompts: Prompts,
-    max_tokens: int = 8192,
-    depth: int = 0,
-) -> list[dict]:
-    """Extrahiert einen Graph-Batch. Bei Fehlschlag und >1 Datei: in zwei Hälften splitten und retry."""
-    context = truncate_for_context(batch_files, max_chars=30000)
-    prompt = prompts.extract + context
-
-    with console.status(f"[dim]Entities extrahieren ({label})...[/dim]"):
-        response = call_llm(prompt, model, max_tokens=max_tokens)
-
-    graph = parse_llm_json(response)
-    if graph and "nodes" in graph:
-        console.print(f"  [green]✓[/green] {label}: {len(graph['nodes'])} Nodes, {len(graph.get('edges', []))} Edges")
-        return [graph]
-
-    if len(batch_files) <= 1 or depth >= 4:
-        console.print(f"  [yellow]⚠[/yellow] {label}: Extraktion fehlgeschlagen ({len(batch_files)} Datei(en) aufgegeben)")
-        return []
-
-    items = list(batch_files.items())
-    mid = len(items) // 2
-    console.print(f"  [yellow]⟳[/yellow] {label}: Split-Retry ({len(items)} → {mid} + {len(items) - mid})")
-    left = dict(items[:mid])
-    right = dict(items[mid:])
-    return (
-        _extract_graph_batch(left, model, f"{label}.A", prompts, max_tokens, depth + 1)
-        + _extract_graph_batch(right, model, f"{label}.B", prompts, max_tokens, depth + 1)
-    )
-
-
 def canonicalize_graph(
     graph: dict,
     model: str,
@@ -882,97 +841,80 @@ def canonicalize_graph(
 
 
 def phase_graph(
-    raw_files: dict,
+    distillates: dict,
     graph_dir: Path,
     model: str,
     prompts: Prompts,
 ) -> dict:
-    """Phase 1b: Extrahiert einen Knowledge Graph (Nodes + Edges) aus den raw/ Dateien.
+    """Phase 5: Knowledge Graph aus den Destillaten zusammenfuehren.
 
-    Schreibt nodes.json/edges.json/meta.json in graph_dir (z.B. graph/ oder graph-de/).
+    Frueher ein eigener Vollscan ueber alle Rohseiten (bei grossen Sites ueber
+    tausend LLM-Calls). Die Entitaeten stecken jetzt schon in den Destillaten,
+    also bleibt nur Mergen + die bestehende Kanonisierung.
+
+    Destillate nennen Entitaeten beim NAMEN — ein LLM kann keine globalen IDs
+    kennen. Der gesamte Konsument-Pfad (illico_graph, canonicalize_graph) ist
+    dagegen ID-basiert, deshalb vergibt der Merge die IDs und loest die Kanten
+    ueber die Namen auf.
     """
-    console.print("\n[bold blue]Phase 1b:[/bold blue] Knowledge Graph extrahieren...")
+    console.print("\n[bold blue]Phase 5:[/bold blue] Knowledge Graph zusammenfuehren...")
 
-    filenames = list(raw_files.keys())
-    partial_graphs = []
+    nodes_by_name: dict[str, dict] = {}
+    for digest in sorted(distillates):
+        for entity in distillates[digest].get("entities", []):
+            name = (entity.get("name") or "").strip()
+            if not name:
+                continue
+            existing = nodes_by_name.get(name)
+            if existing is None:
+                nodes_by_name[name] = {
+                    "id": len(nodes_by_name),
+                    "name": name,
+                    "label": entity.get("label", "Thema"),
+                    "props": dict(entity.get("props", {})),
+                }
+            else:
+                existing["props"].update(entity.get("props", {}))
 
-    graph_batch_size = 15  # Kleinere Batches für Graph-Extraktion (mehr Output pro Datei)
+    edges: list[dict] = []
+    seen_edges: set[tuple] = set()
+    for digest in sorted(distillates):
+        for edge in distillates[digest].get("edges", []):
+            src = nodes_by_name.get((edge.get("src") or "").strip())
+            dst = nodes_by_name.get((edge.get("dst") or "").strip())
+            rel = edge.get("rel", "")
+            # Nicht aufloesbare Referenz: lieber verwerfen als eine kaputte
+            # Kante in den Graphen lassen.
+            if src is None or dst is None or src["id"] == dst["id"]:
+                continue
+            key = (src["id"], rel, dst["id"])
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            edges.append({"id": len(edges), "src": src["id"], "rel": rel, "dst": dst["id"]})
 
-    for i in range(0, len(filenames), graph_batch_size):
-        batch_files = {k: raw_files[k] for k in filenames[i:i + graph_batch_size]}
-        batch_num = i // graph_batch_size + 1
-        console.print(f"  [dim]Batch {batch_num} ({len(batch_files)} Dateien)...[/dim]")
-        partial_graphs.extend(_extract_graph_batch(batch_files, model, f"Batch {batch_num}", prompts))
-
-    if not partial_graphs:
-        console.print("[yellow]⚠ Keine Graphen extrahiert[/yellow]")
-        return {"nodes": [], "edges": []}
-
-    # Bei einem Batch: direkt verwenden, sonst lokal mergen (IDs offset pro Batch)
-    if len(partial_graphs) == 1:
-        graph = partial_graphs[0]
-    else:
-        # Merge: IDs neu vergeben und zusammenführen
-        console.print(f"  [dim]Merge: {len(partial_graphs)} Teil-Graphen zusammenführen...[/dim]")
-
-        # Einfacher lokaler Merge: IDs offset pro Batch
-        all_nodes = []
-        all_edges = []
-        node_offset = 0
-        edge_offset = 0
-
-        for pg in partial_graphs:
-            id_map = {}
-            for node in pg.get("nodes", []):
-                if "id" not in node:
-                    continue
-                old_id = node["id"]
-                new_id = node_offset + old_id
-                id_map[old_id] = new_id
-                all_nodes.append({**node, "id": new_id})
-            for edge in pg.get("edges", []):
-                # LLM-Output kann einzelne Edges ohne Pflichtfelder liefern.
-                # Bei grossen Tenants (DKD: 52 Batches) reicht eine kaputte
-                # Edge, um die gesamte Merge-Phase zu killen.
-                if not all(k in edge for k in ("id", "src", "dst")):
-                    continue
-                new_edge_id = edge_offset + edge["id"]
-                all_edges.append({
-                    **edge,
-                    "id": new_edge_id,
-                    "src": id_map.get(edge["src"], edge["src"]),
-                    "dst": id_map.get(edge["dst"], edge["dst"]),
-                })
-            node_offset += max((n["id"] for n in pg.get("nodes", []) if "id" in n), default=0) + 1
-            edge_offset += max((e["id"] for e in pg.get("edges", []) if "id" in e), default=0) + 1
-
-        graph = {"nodes": all_nodes, "edges": all_edges}
-
-    # Entity-Resolution: Synonyme zu kanonischen Nodes mit aliases zusammenführen
-    # (immer — auch bei nur einem Batch, sonst bleiben Synonyme innerhalb einer
-    #  kleinen Site / eines Batches getrennt)
+    graph = {"nodes": list(nodes_by_name.values()), "edges": edges}
     graph = canonicalize_graph(graph, model, prompts)
 
-    # Speichern
     graph_dir.mkdir(parents=True, exist_ok=True)
+    (graph_dir / "nodes.json").write_text(
+        json.dumps(graph["nodes"], ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (graph_dir / "edges.json").write_text(
+        json.dumps(graph.get("edges", []), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (graph_dir / "meta.json").write_text(
+        json.dumps({
+            "name": "Illico Knowledge Graph",
+            "description": f"Extrahiert aus {len(distillates)} Destillaten",
+            "compiled": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
-    nodes_path = graph_dir / "nodes.json"
-    edges_path = graph_dir / "edges.json"
-    meta_path = graph_dir / "meta.json"
-
-    nodes_path.write_text(json.dumps(graph["nodes"], ensure_ascii=False, indent=2), encoding="utf-8")
-    edges_path.write_text(json.dumps(graph.get("edges", []), ensure_ascii=False, indent=2), encoding="utf-8")
-    meta_path.write_text(json.dumps({
-        "name": "Illico Knowledge Graph",
-        "description": f"Extrahiert aus {len(raw_files)} gecrawlten Seiten",
-        "compiled": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    n_local = sum(1 for n in graph["nodes"] if n.get("props", {}).get("source") == "local")
-    n_domain = sum(1 for n in graph["nodes"] if n.get("props", {}).get("source") == "domain")
-
-    console.print(f"  [green]✓[/green] {len(graph['nodes'])} Nodes ({n_local} lokal, {n_domain} domain)")
-    console.print(f"  [green]✓[/green] {len(graph.get('edges', []))} Edges")
+    console.print(
+        f"  [green]✓[/green] {len(graph['nodes'])} Nodes, {len(graph.get('edges', []))} Edges"
+    )
     console.print(f"  [green]✓[/green] Gespeichert in {graph_dir}/")
 
     return graph
