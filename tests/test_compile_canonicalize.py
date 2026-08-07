@@ -50,31 +50,37 @@ def test_canonicalize_graph_survives_bad_llm_json(monkeypatch):
     assert out["nodes"][0]["aliases"] == []
 
 
-def test_phase_graph_canonicalizes_across_batches(monkeypatch, tmp_path: Path):
-    # Zwei Batches liefern denselben Ort in zwei Schreibweisen
-    batches = iter([
-        [{"nodes": [{"id": 1, "label": "Location", "name": "Frankfurt am Main", "props": {"source": "local"}}], "edges": []}],
-        [{"nodes": [{"id": 1, "label": "Location", "name": "Frankfurt", "props": {"source": "local"}}], "edges": []}],
-    ])
-    monkeypatch.setattr("illico_compile._extract_graph_batch", lambda *a, **k: next(batches))
+def _distillate(digest: str, entities: list[dict]) -> dict:
+    return {"hash": digest, "title": "t", "summary": "s", "keypoints": [],
+            "entities": entities, "edges": [], "sources": [f"{digest[-1]}.md"]}
 
-    def fake_llm(prompt, model, max_tokens=2000, retries=3):
-        # IDs aus dem Payload extrahieren (Canonicalize sendet [{id, label, name}, ...])
-        try:
-            payload_start = prompt.rfind("[{")
-            nodes_payload = _json.loads(prompt[payload_start:])
-            ids = [n["id"] for n in nodes_payload]
-        except Exception:
-            ids = [1, 2]
-        return _json.dumps({"clusters": [{
-            "prefLabel": "Frankfurt am Main", "label": "Location",
-            "aliases": ["Frankfurt"], "member_ids": ids}]})
-    monkeypatch.setattr("illico_compile.call_llm", fake_llm)
 
-    # 16+ Dummy-Dateien erzwingen >1 Batch (graph_batch_size=15)
-    raw = {f"f{i}.md": "x" for i in range(16)}
+def _canonicalize_llm(prompt, model, max_tokens=2000, retries=3):
+    # IDs aus dem Payload extrahieren (Canonicalize sendet [{id, label, name}, ...])
+    try:
+        payload_start = prompt.rfind("[{")
+        nodes_payload = _json.loads(prompt[payload_start:])
+        ids = [n["id"] for n in nodes_payload]
+    except Exception:
+        ids = [0, 1]
+    return _json.dumps({"clusters": [{
+        "prefLabel": "Frankfurt am Main", "label": "Location",
+        "aliases": ["Frankfurt"], "member_ids": ids}]})
+
+
+def test_phase_graph_canonicalizes_across_distillates(monkeypatch, tmp_path: Path):
+    """Zwei verschiedene Seiten nennen denselben Ort unterschiedlich — die
+    Kanonisierung muss sie trotzdem zusammenfuehren."""
+    monkeypatch.setattr("illico_compile.call_llm", _canonicalize_llm)
+
+    distillates = {
+        "sha256:1": _distillate("sha256:1", [
+            {"name": "Frankfurt am Main", "label": "Location", "props": {"source": "local"}}]),
+        "sha256:2": _distillate("sha256:2", [
+            {"name": "Frankfurt", "label": "Location", "props": {"source": "local"}}]),
+    }
     graph_dir = tmp_path / "graph-AB3X9K"
-    phase_graph(raw, graph_dir, "test-model", get_prompts("de"))
+    phase_graph(distillates, graph_dir, "test-model", get_prompts("de"))
 
     nodes = _json.loads((graph_dir / "nodes.json").read_text(encoding="utf-8"))
     locs = [n for n in nodes if n["label"] == "Location"]
@@ -83,24 +89,18 @@ def test_phase_graph_canonicalizes_across_batches(monkeypatch, tmp_path: Path):
     assert locs[0]["aliases"] == ["Frankfurt"]
 
 
-def test_phase_graph_canonicalizes_single_batch(monkeypatch, tmp_path: Path):
-    # Ein einziger Batch mit zwei Schreibweisen desselben Orts
-    monkeypatch.setattr("illico_compile._extract_graph_batch", lambda *a, **k: [
-        {"nodes": [
-            {"id": 1, "label": "Location", "name": "Frankfurt am Main", "props": {"source": "local"}},
-            {"id": 2, "label": "Location", "name": "Frankfurt", "props": {"source": "local"}},
-        ], "edges": []}
-    ])
+def test_phase_graph_canonicalizes_within_one_distillate(monkeypatch, tmp_path: Path):
+    """Auch zwei Schreibweisen innerhalb einer einzigen Seite werden gemergt."""
+    monkeypatch.setattr("illico_compile.call_llm", _canonicalize_llm)
 
-    def fake_llm(prompt, model, max_tokens=2000, retries=3):
-        return _json.dumps({"clusters": [{
-            "prefLabel": "Frankfurt am Main", "label": "Location",
-            "aliases": ["Frankfurt"], "member_ids": [1, 2]}]})
-    monkeypatch.setattr("illico_compile.call_llm", fake_llm)
-
-    raw = {"f0.md": "x"}  # eine Datei → ein Batch
+    distillates = {
+        "sha256:1": _distillate("sha256:1", [
+            {"name": "Frankfurt am Main", "label": "Location", "props": {"source": "local"}},
+            {"name": "Frankfurt", "label": "Location", "props": {"source": "local"}},
+        ]),
+    }
     graph_dir = tmp_path / "graph-AB3X9K"
-    phase_graph(raw, graph_dir, "test-model", get_prompts("de"))
+    phase_graph(distillates, graph_dir, "test-model", get_prompts("de"))
 
     nodes = _json.loads((graph_dir / "nodes.json").read_text(encoding="utf-8"))
     locs = [n for n in nodes if n["label"] == "Location"]

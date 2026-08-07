@@ -10,7 +10,11 @@ Usage:
 """
 
 import os
+import hashlib
 import json
+import re
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
@@ -179,7 +183,8 @@ Regeln:
 - Nutze NUR Slugs aus der Liste oben — keine erfundenen Links
 - Strukturiere mit ## Überschriften
 - Maximal 600 Wörter
-- Schreibe in der Sprache der Quellen
+- Schreibe in der Sprache der Quellen. Ist oben eine "Sprache der Quellen"
+  angegeben, ist DIESE verbindlich — auch wenn diese Anweisung deutsch ist.
 - Erfinde nichts — nur was in den Quellen steht
 - Frontmatter im YAML-Format oben
 
@@ -206,7 +211,8 @@ Die _index.md soll:
 - Eine kurze Beschreibung der Wissensbasis enthalten
 - Alle Artikel mit einem Satz Beschreibung auflisten
 - Obsidian-Links mit Slug als Ziel verwenden: [[slug|Anzeigename]] (z.B. [[typo3-solutions|TYPO3-Lösungen]])
-- Auf Deutsch oder Englisch (je nach Domain-Sprache)
+- Ist oben eine "Sprache der Quellen" angegeben, ist DIESE verbindlich —
+  auch wenn diese Anweisung deutsch ist. Sonst nach Domain-Sprache.
 - Einen Abschnitt "Wie diese Wiki entstand" enthalten (Illico, Karpathy-Methode)
 
 Schreibe NUR den Markdown-Inhalt, kein JSON.
@@ -436,16 +442,111 @@ ARTICLE_PROMPT_DE = ARTICLE_PROMPT
 INDEX_PROMPT_DE = INDEX_PROMPT
 LINT_PROMPT_DE = LINT_PROMPT
 
+
+DISTILL_PROMPT_DE = """Du bist Illico. Verdichte jede der folgenden Webseiten zu einem kompakten Destillat.
+
+Fuer JEDE Seite mit der Kennung `### PAGE pN` lieferst du genau ein Objekt zurueck.
+
+Antworte AUSSCHLIESSLICH mit JSON in dieser Form:
+{
+  "pages": [
+    {
+      "id": "p0",
+      "title": "Praegnanter Titel der Seite",
+      "summary": "3-6 Saetze, die den Inhalt der Seite eigenstaendig wiedergeben.",
+      "keypoints": ["Kernaussage 1", "Kernaussage 2"],
+      "entities": [{"name": "Name", "label": "Organisation|Person|Ort|Produkt|Leistung|Thema", "props": {}}],
+      "edges": [{"src": "Name A", "rel": "gehoert_zu|bietet_an|liegt_in|arbeitet_fuer|verwandt_mit", "dst": "Name B"}]
+    }
+  ]
+}
+
+Regeln:
+- Die `id` MUSS exakt der Kennung der Seite entsprechen (p0, p1, ...).
+- Schreibe `title`, `summary` und `keypoints` in der SPRACHE DER SEITE (hinter
+  der Kennung angegeben). Eine englische Seite bekommt ein englisches Destillat.
+- Erfinde nichts. Was nicht auf der Seite steht, kommt nicht ins Destillat.
+- `entities` nur fuer benannte Dinge, nicht fuer Allerweltsbegriffe.
+- `edges` nur zwischen Entitaeten, die du in `entities` derselben Seite nennst.
+- Kein Text ausserhalb des JSON.
+
+Seiten:
+"""
+
+DISTILL_PROMPT_EN = """You are Illico. Condense each of the following web pages into a compact distillate.
+
+For EVERY page marked `### PAGE pN` return exactly one object.
+
+Respond ONLY with JSON in this shape:
+{
+  "pages": [
+    {
+      "id": "p0",
+      "title": "Concise page title",
+      "summary": "3-6 sentences conveying the page content on its own.",
+      "keypoints": ["Key point 1", "Key point 2"],
+      "entities": [{"name": "Name", "label": "Organisation|Person|Place|Product|Service|Topic", "props": {}}],
+      "edges": [{"src": "Name A", "rel": "belongs_to|offers|located_in|works_for|related_to", "dst": "Name B"}]
+    }
+  ]
+}
+
+Rules:
+- The `id` MUST match the page marker exactly (p0, p1, ...).
+- Write `title`, `summary` and `keypoints` in the LANGUAGE OF THE PAGE (stated
+  after the marker). A German page gets a German distillate.
+- Invent nothing. What is not on the page does not go into the distillate.
+- `entities` only for named things, not generic terms.
+- `edges` only between entities you list under `entities` of the same page.
+- No text outside the JSON.
+
+Pages:
+"""
+
+
+ASSIGN_PROMPT_DE = """Du bist Illico. Ordne neue Dokumente den bestehenden Themen-Clustern zu.
+
+Antworte AUSSCHLIESSLICH mit JSON:
+{
+  "assignments": [{"hash": "sha256:...", "slug": "bestehender-slug"}],
+  "new_clusters": [{"slug": "neuer-slug", "name": "Name", "description": "Kurzbeschreibung", "members": ["sha256:..."]}]
+}
+
+Regeln:
+- Bevorzuge bestehende Cluster. Lege nur einen neuen an, wenn wirklich keiner passt.
+- Aendere NIEMALS Slug oder Name eines bestehenden Clusters.
+- Slugs sind kleingeschrieben, mit Bindestrichen, ohne Umlaute.
+- Jedes Dokument gehoert in genau einen Cluster.
+- Kein Text ausserhalb des JSON.
+"""
+
+ASSIGN_PROMPT_EN = """You are Illico. Assign new documents to existing topic clusters.
+
+Respond ONLY with JSON:
+{
+  "assignments": [{"hash": "sha256:...", "slug": "existing-slug"}],
+  "new_clusters": [{"slug": "new-slug", "name": "Name", "description": "Short description", "members": ["sha256:..."]}]
+}
+
+Rules:
+- Prefer existing clusters. Only create a new one if none fits.
+- NEVER change the slug or name of an existing cluster.
+- Slugs are lowercase, hyphenated, ASCII only.
+- Every document belongs to exactly one cluster.
+- No text outside the JSON.
+"""
+
+
 @dataclass(frozen=True)
 class Prompts:
     inventory: str
     merge: str
-    extract: str
-    merge_graph: str
     canonicalize: str
     article: str
     index: str
     lint: str
+    distill: str
+    assign: str
 
 
 def get_prompts(lang: str | None) -> Prompts:
@@ -457,22 +558,22 @@ def get_prompts(lang: str | None) -> Prompts:
         return Prompts(
             inventory=INVENTORY_PROMPT_EN,
             merge=MERGE_PROMPT_EN,
-            extract=EXTRACT_PROMPT_EN,
-            merge_graph=MERGE_GRAPH_PROMPT_EN,
             canonicalize=CANONICALIZE_PROMPT_EN,
             article=ARTICLE_PROMPT_EN,
             index=INDEX_PROMPT_EN,
             lint=LINT_PROMPT_EN,
+            distill=DISTILL_PROMPT_EN,
+            assign=ASSIGN_PROMPT_EN,
         )
     return Prompts(
         inventory=INVENTORY_PROMPT_DE,
         merge=MERGE_PROMPT_DE,
-        extract=EXTRACT_PROMPT_DE,
-        merge_graph=MERGE_GRAPH_PROMPT_DE,
         canonicalize=CANONICALIZE_PROMPT_DE,
         article=ARTICLE_PROMPT_DE,
         index=INDEX_PROMPT_DE,
         lint=LINT_PROMPT_DE,
+        distill=DISTILL_PROMPT_DE,
+        assign=ASSIGN_PROMPT_DE,
     )
 
 
@@ -486,6 +587,18 @@ def read_raw_files(raw_dir: Path) -> dict[str, str]:
         content = md_file.read_text(encoding="utf-8")
         files[rel] = content
     return files
+
+
+def _distill_root(data: Path, wiki_dir: Path) -> Path:
+    """Store-Verzeichnis parallel zum Wiki: wiki-ABC → distill-ABC, wiki → distill.
+
+    Bewusst pro Tenant statt global: Domains gehoeren im Cloud-Overlay eindeutig
+    einem Mandanten, ein gemeinsamer Store braechte also keine Ersparnis, wohl
+    aber eine neue Leak-Flaeche.
+    """
+    name = wiki_dir.name
+    suffix = name[len("wiki"):] if name.startswith("wiki") else ""
+    return data / ("distill" + suffix)
 
 
 def _filter_raw_by_domains(raw_files: dict[str, str], allowed: set[str] | None) -> dict[str, str]:
@@ -703,41 +816,6 @@ def _inventory_fallback(raw_files: dict) -> dict:
     }
 
 
-def _extract_graph_batch(
-    batch_files: dict,
-    model: str,
-    label: str,
-    prompts: Prompts,
-    max_tokens: int = 8192,
-    depth: int = 0,
-) -> list[dict]:
-    """Extrahiert einen Graph-Batch. Bei Fehlschlag und >1 Datei: in zwei Hälften splitten und retry."""
-    context = truncate_for_context(batch_files, max_chars=30000)
-    prompt = prompts.extract + context
-
-    with console.status(f"[dim]Entities extrahieren ({label})...[/dim]"):
-        response = call_llm(prompt, model, max_tokens=max_tokens)
-
-    graph = parse_llm_json(response)
-    if graph and "nodes" in graph:
-        console.print(f"  [green]✓[/green] {label}: {len(graph['nodes'])} Nodes, {len(graph.get('edges', []))} Edges")
-        return [graph]
-
-    if len(batch_files) <= 1 or depth >= 4:
-        console.print(f"  [yellow]⚠[/yellow] {label}: Extraktion fehlgeschlagen ({len(batch_files)} Datei(en) aufgegeben)")
-        return []
-
-    items = list(batch_files.items())
-    mid = len(items) // 2
-    console.print(f"  [yellow]⟳[/yellow] {label}: Split-Retry ({len(items)} → {mid} + {len(items) - mid})")
-    left = dict(items[:mid])
-    right = dict(items[mid:])
-    return (
-        _extract_graph_batch(left, model, f"{label}.A", prompts, max_tokens, depth + 1)
-        + _extract_graph_batch(right, model, f"{label}.B", prompts, max_tokens, depth + 1)
-    )
-
-
 def canonicalize_graph(
     graph: dict,
     model: str,
@@ -783,117 +861,137 @@ def canonicalize_graph(
 
 
 def phase_graph(
-    raw_files: dict,
+    distillates: dict,
     graph_dir: Path,
     model: str,
     prompts: Prompts,
 ) -> dict:
-    """Phase 1b: Extrahiert einen Knowledge Graph (Nodes + Edges) aus den raw/ Dateien.
+    """Phase 5: Knowledge Graph aus den Destillaten zusammenfuehren.
 
-    Schreibt nodes.json/edges.json/meta.json in graph_dir (z.B. graph/ oder graph-de/).
+    Frueher ein eigener Vollscan ueber alle Rohseiten (bei grossen Sites ueber
+    tausend LLM-Calls). Die Entitaeten stecken jetzt schon in den Destillaten,
+    also bleibt nur Mergen + die bestehende Kanonisierung.
+
+    Destillate nennen Entitaeten beim NAMEN — ein LLM kann keine globalen IDs
+    kennen. Der gesamte Konsument-Pfad (illico_graph, canonicalize_graph) ist
+    dagegen ID-basiert, deshalb vergibt der Merge die IDs und loest die Kanten
+    ueber die Namen auf.
     """
-    console.print("\n[bold blue]Phase 1b:[/bold blue] Knowledge Graph extrahieren...")
+    console.print("\n[bold blue]Phase 5:[/bold blue] Knowledge Graph zusammenfuehren...")
 
-    filenames = list(raw_files.keys())
-    partial_graphs = []
+    # Der Merge selbst ist billig, die Kanonisierung nicht: sie kostet einen
+    # LLM-Call je Label-Block. Ohne diesen Skip zahlt JEDER Lauf sie neu — bei
+    # einem grossen Graphen dutzende Calls fuer ein identisches Ergebnis.
+    # Die Destillat-Schema-Version gehoert mit hinein: eine Prompt-Erhoehung
+    # destilliert alles neu, die Seiten-Hashes bleiben aber gleich (sie haengen
+    # am Inhalt). Ohne sie bliebe der Graph nach einem Schema-Bump veraltet.
+    import illico_distill
 
-    graph_batch_size = 15  # Kleinere Batches für Graph-Extraktion (mehr Output pro Datei)
-
-    for i in range(0, len(filenames), graph_batch_size):
-        batch_files = {k: raw_files[k] for k in filenames[i:i + graph_batch_size]}
-        batch_num = i // graph_batch_size + 1
-        console.print(f"  [dim]Batch {batch_num} ({len(batch_files)} Dateien)...[/dim]")
-        partial_graphs.extend(_extract_graph_batch(batch_files, model, f"Batch {batch_num}", prompts))
-
-    if not partial_graphs:
-        console.print("[yellow]⚠ Keine Graphen extrahiert[/yellow]")
-        return {"nodes": [], "edges": []}
-
-    # Bei einem Batch: direkt verwenden, sonst lokal mergen (IDs offset pro Batch)
-    if len(partial_graphs) == 1:
-        graph = partial_graphs[0]
-    else:
-        # Merge: IDs neu vergeben und zusammenführen
-        console.print(f"  [dim]Merge: {len(partial_graphs)} Teil-Graphen zusammenführen...[/dim]")
-
-        # Einfacher lokaler Merge: IDs offset pro Batch
-        all_nodes = []
-        all_edges = []
-        node_offset = 0
-        edge_offset = 0
-
-        for pg in partial_graphs:
-            id_map = {}
-            for node in pg.get("nodes", []):
-                if "id" not in node:
-                    continue
-                old_id = node["id"]
-                new_id = node_offset + old_id
-                id_map[old_id] = new_id
-                all_nodes.append({**node, "id": new_id})
-            for edge in pg.get("edges", []):
-                # LLM-Output kann einzelne Edges ohne Pflichtfelder liefern.
-                # Bei grossen Tenants (DKD: 52 Batches) reicht eine kaputte
-                # Edge, um die gesamte Merge-Phase zu killen.
-                if not all(k in edge for k in ("id", "src", "dst")):
-                    continue
-                new_edge_id = edge_offset + edge["id"]
-                all_edges.append({
-                    **edge,
-                    "id": new_edge_id,
-                    "src": id_map.get(edge["src"], edge["src"]),
-                    "dst": id_map.get(edge["dst"], edge["dst"]),
-                })
-            node_offset += max((n["id"] for n in pg.get("nodes", []) if "id" in n), default=0) + 1
-            edge_offset += max((e["id"] for e in pg.get("edges", []) if "id" in e), default=0) + 1
-
-        graph = {"nodes": all_nodes, "edges": all_edges}
-
-    # Entity-Resolution: Synonyme zu kanonischen Nodes mit aliases zusammenführen
-    # (immer — auch bei nur einem Batch, sonst bleiben Synonyme innerhalb einer
-    #  kleinen Site / eines Batches getrennt)
-    graph = canonicalize_graph(graph, model, prompts)
-
-    # Speichern
-    graph_dir.mkdir(parents=True, exist_ok=True)
-
+    fingerprint = "sha256:" + hashlib.sha256(
+        f"v{illico_distill.SCHEMA}\n".encode("utf-8")
+        + "\n".join(sorted(distillates)).encode("utf-8")
+    ).hexdigest()
     nodes_path = graph_dir / "nodes.json"
     edges_path = graph_dir / "edges.json"
     meta_path = graph_dir / "meta.json"
 
-    nodes_path.write_text(json.dumps(graph["nodes"], ensure_ascii=False, indent=2), encoding="utf-8")
-    edges_path.write_text(json.dumps(graph.get("edges", []), ensure_ascii=False, indent=2), encoding="utf-8")
-    meta_path.write_text(json.dumps({
-        "name": "Illico Knowledge Graph",
-        "description": f"Extrahiert aus {len(raw_files)} gecrawlten Seiten",
-        "compiled": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    if nodes_path.exists() and edges_path.exists() and meta_path.exists():
+        try:
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            stored = {}
+        if stored.get("fingerprint") == fingerprint:
+            nodes = json.loads(nodes_path.read_text(encoding="utf-8"))
+            edges = json.loads(edges_path.read_text(encoding="utf-8"))
+            console.print(
+                f"  [dim]unveraendert — {len(nodes)} Nodes, {len(edges)} Edges uebernommen[/dim]"
+            )
+            return {"nodes": nodes, "edges": edges}
 
-    n_local = sum(1 for n in graph["nodes"] if n.get("props", {}).get("source") == "local")
-    n_domain = sum(1 for n in graph["nodes"] if n.get("props", {}).get("source") == "domain")
+    nodes_by_name: dict[str, dict] = {}
+    for digest in sorted(distillates):
+        for entity in distillates[digest].get("entities", []):
+            name = (entity.get("name") or "").strip()
+            if not name:
+                continue
+            existing = nodes_by_name.get(name)
+            if existing is None:
+                nodes_by_name[name] = {
+                    "id": len(nodes_by_name),
+                    "name": name,
+                    "label": entity.get("label", "Thema"),
+                    "props": dict(entity.get("props", {})),
+                }
+            else:
+                existing["props"].update(entity.get("props", {}))
 
-    console.print(f"  [green]✓[/green] {len(graph['nodes'])} Nodes ({n_local} lokal, {n_domain} domain)")
-    console.print(f"  [green]✓[/green] {len(graph.get('edges', []))} Edges")
+    edges: list[dict] = []
+    seen_edges: set[tuple] = set()
+    for digest in sorted(distillates):
+        for edge in distillates[digest].get("edges", []):
+            src = nodes_by_name.get((edge.get("src") or "").strip())
+            dst = nodes_by_name.get((edge.get("dst") or "").strip())
+            rel = edge.get("rel", "")
+            # Nicht aufloesbare Referenz: lieber verwerfen als eine kaputte
+            # Kante in den Graphen lassen.
+            if src is None or dst is None or src["id"] == dst["id"]:
+                continue
+            key = (src["id"], rel, dst["id"])
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            edges.append({"id": len(edges), "src": src["id"], "rel": rel, "dst": dst["id"]})
+
+    graph = {"nodes": list(nodes_by_name.values()), "edges": edges}
+    graph = canonicalize_graph(graph, model, prompts)
+
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    nodes_path.write_text(
+        json.dumps(graph["nodes"], ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    edges_path.write_text(
+        json.dumps(graph.get("edges", []), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    meta_path.write_text(
+        json.dumps({
+            "name": "Illico Knowledge Graph",
+            "description": f"Extrahiert aus {len(distillates)} Destillaten",
+            "compiled": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "fingerprint": fingerprint,
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    console.print(
+        f"  [green]✓[/green] {len(graph['nodes'])} Nodes, {len(graph.get('edges', []))} Edges"
+    )
     console.print(f"  [green]✓[/green] Gespeichert in {graph_dir}/")
 
     return graph
 
 
-def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
-    """Guarantees YAML frontmatter with sources on every compiled article.
+_SOURCES_LINE = re.compile(r"^sources:.*$", re.MULTILINE)
 
-    If the LLM omitted the frontmatter block (common with weaker models), this
-    function prepends a minimal one derived from the known source file list so
-    that downstream domain-based filtering (e.g. Cloud's per-tenant article
-    filter) always has data to work with.
+
+def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
+    """Garantiert Frontmatter und setzt `sources` IMMER selbst.
+
+    Frueher durfte das LLM die sources schreiben — es kuerzte dabei Pfade auf
+    Dateinamen (`unterordner/aktuelles.md` → `aktuelles.md`), was dem
+    Cloud-Overlay die Domain-Zuordnung zerschoss. Die Quellen sind bekannt,
+    also werden sie programmatisch gesetzt statt erraten.
     """
+    sources_yaml = json.dumps(sorted(source_files), ensure_ascii=False)
     text = content.lstrip()
-    has_frontmatter = text.startswith("---") or text.startswith("```yaml")
-    if has_frontmatter:
-        return content
+
+    if text.startswith("---") or text.startswith("```yaml"):
+        if _SOURCES_LINE.search(text):
+            return _SOURCES_LINE.sub(f"sources: {sources_yaml}", text, count=1)
+        # Frontmatter ohne sources: direkt nach dem Opener einfuegen.
+        opener_end = text.index("\n") + 1
+        return text[:opener_end] + f"sources: {sources_yaml}\n" + text[opener_end:]
 
     title_yaml = json.dumps(title, ensure_ascii=False)
-    sources_yaml = json.dumps(source_files, ensure_ascii=False)
     today = datetime.now().strftime("%Y-%m-%d")
     injected = (
         f'---\ntitle: {title_yaml}\nsources: {sources_yaml}\ncompiled: "{today}"\n---\n\n'
@@ -902,62 +1000,81 @@ def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[
 
 
 def phase_articles(
-    raw_files: dict,
+    distillates: dict,
     inventory: dict,
+    previous: dict,
     wiki_dir: Path,
     model: str,
     prompts: Prompts,
-) -> list[str]:
-    """Phase 2: Pro Cluster einen Wiki-Artikel generieren."""
-    console.print("\n[bold blue]Phase 2:[/bold blue] Wiki-Artikel schreiben...")
+    call,
+    jobs: int = 4,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Phase 3: Artikel schreiben — nur fuer Cluster mit geaendertem Fingerprint.
 
+    Liefert (alle Cluster als (slug, name), tatsaechlich geschriebene Slugs).
+    Der zweite Wert entscheidet, ob Index und Lint ueberhaupt laufen muessen.
+
+    Es wird NICHTS pauschal geloescht. Frueher raeumte diese Phase zuerst alle
+    Artikel weg, wodurch das Wiki waehrend jedes Laufs unvollstaendig und nach
+    einem Abbruch ein Torso war.
+    """
+    from illico_inventory import changed_clusters
+
+    console.print("\n[bold blue]Phase 3:[/bold blue] Wiki-Artikel schreiben...")
     wiki_dir.mkdir(parents=True, exist_ok=True)
-    # Alte Artikel aus vorigen Compile-Läufen entfernen damit keine Orphans
-    # mit fehlendem Frontmatter die Tenant-Sicht verunreinigen. Underscore-
-    # Dateien (_index.md, _lint-report.md) werden von späteren Phasen geschrieben.
-    for old in wiki_dir.glob("*.md"):
-        if not old.name.startswith("_"):
-            old.unlink()
 
-    created_articles = []
-    clusters = inventory.get("clusters", [])
+    changed = {c["slug"] for c in changed_clusters(inventory, previous)}
+    todo = [
+        cluster for cluster in inventory.get("clusters", [])
+        if cluster["slug"] in changed
+        or not (wiki_dir / f"{cluster['slug']}.md").exists()
+    ]
 
-    for i, cluster in enumerate(clusters):
-        name = cluster.get("name", f"Artikel {i+1}")
-        slug = cluster.get("slug", f"artikel-{i+1}")
-        source_files = cluster.get("files", [])
+    if not todo:
+        console.print("  [dim]keine Aenderungen — kein Artikel neu geschrieben[/dim]")
+    else:
+        console.print(
+            f"  [dim]{len(todo)}/{len(inventory.get('clusters', []))} Artikel betroffen[/dim]"
+        )
 
-        console.print(f"  [dim]→ {name}[/dim]")
+    known = [f"  {c['slug']} → {c['name']}" for c in inventory.get("clusters", [])]
 
-        # Quellen zusammenstellen
-        sources_content = ""
-        for fname in source_files[:5]:  # Max 5 Quelldateien pro Artikel
-            if fname in raw_files:
-                sources_content += f"**{fname}:**\n{raw_files[fname][:2000]}\n\n"
+    def write(cluster: dict) -> None:
+        members = [distillates[h] for h in cluster["members"] if h in distillates]
+        sources_content = "\n\n".join(
+            f"**{d.get('title', '')}**\n{d.get('summary', '')}\n"
+            + "\n".join(f"- {k}" for k in d.get("keypoints", []))
+            for d in members
+        )
+        source_files = sorted({s for d in members for s in d.get("sources", [])})
 
-        if not sources_content:
-            # Fallback: alle raw-Dateien anteilig
-            sources_content = truncate_for_context(raw_files, max_chars=6000)
+        # Sprache explizit ansagen. Der Artikel-Prompt ist deutsch und der
+        # Cluster-Name stammt aus einem ebenfalls deutschen Zuordnungsschritt —
+        # gegen diesen doppelten Kontext ist "schreibe in der Sprache der
+        # Quellen" zu schwach, und englische Sites bekaemen deutsche Artikel.
+        langs = [d.get("language") for d in members if d.get("language")]
+        if langs:
+            dominant = Counter(langs).most_common(1)[0][0]
+            sources_content = f"Sprache der Quellen: {dominant}\n\n" + sources_content
 
-        known = [f"  {c.get('slug', 'unknown')} → {c.get('name', '?')}" for c in clusters if c.get("name") != name]
         prompt = prompts.article.format(
-            topic=name,
-            sources=sources_content[:6000],
-            known_articles="\n".join(known[:20])
+            topic=cluster["name"],
+            sources=sources_content,
+            known_articles="\n".join(known[:40]),
         ).replace("DATUM", datetime.now().strftime("%Y-%m-%d"))
 
-        with console.status(f"[dim]{name}...[/dim]"):
-            content = call_llm(prompt, model, max_tokens=4000)
+        content = call(prompt, model, 4000)
+        content = _ensure_frontmatter(content, cluster["slug"], cluster["name"], source_files)
+        (wiki_dir / f"{cluster['slug']}.md").write_text(content, encoding="utf-8")
+        console.print(f"  [green]✓[/green] {cluster['slug']}.md")
 
-        content = _ensure_frontmatter(content, slug, name, source_files)
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for future in [pool.submit(write, c) for c in todo]:
+                future.result()
 
-        # Speichern
-        article_path = wiki_dir / f"{slug}.md"
-        article_path.write_text(content, encoding="utf-8")
-        created_articles.append((slug, name))
-        console.print(f"  [green]✓[/green] {slug}.md")
-
-    return created_articles
+    created = [(c["slug"], c["name"]) for c in inventory.get("clusters", [])]
+    return created, [c["slug"] for c in todo]
 
 
 def phase_index(
@@ -966,11 +1083,18 @@ def phase_index(
     wiki_dir: Path,
     model: str,
     prompts: Prompts,
+    lang: str = "",
 ) -> None:
-    """Phase 3: _index.md als Einstiegspunkt der Wiki erstellen."""
-    console.print("\n[bold blue]Phase 3:[/bold blue] Index erstellen...")
+    """Phase 4: _index.md als Einstiegspunkt der Wiki erstellen.
+
+    `lang` ist die vorherrschende Sprache der Quellen. Ohne sie begruesst eine
+    englische Wissensbasis ihre Leser auf Deutsch, weil der Prompt deutsch ist.
+    """
+    console.print("\n[bold blue]Phase 4:[/bold blue] Index erstellen...")
 
     article_list = "\n".join(f"  {slug} → {name}" for slug, name in created_articles)
+    if lang:
+        article_list = f"Sprache der Quellen: {lang}\n\n" + article_list
     prompt = prompts.index.format(
         articles=article_list,
         domain=inventory.get("domain", "unbekannt"),
@@ -1020,7 +1144,8 @@ def compile(
     data: Path = typer.Option(Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d", help="Illico-Datenverzeichnis"),
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM-Modell (default: ILLICO_ANSWER_MODEL env)"),
     lint_only: bool = typer.Option(False, "--lint", help="Nur Linting-Pass ausführen"),
-    graph_only: bool = typer.Option(False, "--graph-only", help="Nur Knowledge-Graph neu extrahieren (Phase 1b)"),
+    graph_only: bool = typer.Option(False, "--graph-only", help="Nur Knowledge-Graph aus den Destillaten neu bauen"),
+    jobs: int = typer.Option(4, "--jobs", "-j", help="Parallele LLM-Calls (Destillation, Artikel)."),
     canonicalize_only: bool = typer.Option(False, "--canonicalize-only", help="Nur Entity-Resolution über bestehenden Graph laufen lassen (kein Re-Compile)"),
     only_domains: Optional[str] = typer.Option(None, "--only-domains", help="Nur Raw-Dateien dieser Domains (Komma-getrennt) kompilieren."),
     lang: Optional[str] = typer.Option(None, "--lang", help="Nur raw/-Dateien dieser Sprache(n) ins Wiki uebernehmen, ISO 639-1 kommagetrennt (z.B. 'de' oder 'de,en')"),
@@ -1128,22 +1253,75 @@ def compile(
                 raise typer.Exit(1)
             phase_lint(wiki_dir, effective_model, prompts)
         elif graph_only:
+            from illico_distill import DistillStore, distill_all
+
             console.print(f"  Graph:   [cyan]{graph_dir}[/cyan]")
-            phase_graph(raw_files, graph_dir, effective_model, prompts)
+            distilled = distill_all(
+                raw_files, DistillStore(_distill_root(data, wiki_dir)),
+                effective_model, prompts.distill, call_llm, jobs=jobs,
+            )
+            phase_graph(distilled.distillates, graph_dir, effective_model, prompts)
         else:
-            # Vollständiger Compile-Durchlauf
-            inventory = phase_inventory(raw_files, effective_model, prompts)
+            from illico_distill import DistillStore, distill_all
+            from illico_inventory import (
+                assign_new, load_inventory, prune, save_inventory,
+            )
 
-            # Inventar speichern (für Debugging)
+            store = DistillStore(_distill_root(data, wiki_dir))
+
+            console.print("\n[bold blue]Phase 1:[/bold blue] Seiten destillieren...")
+            distilled = distill_all(
+                raw_files, store, effective_model, prompts.distill, call_llm,
+                jobs=jobs,
+            )
+            console.print(f"  [green]✓[/green] {len(distilled.distillates)} Destillate")
+            if distilled.failed:
+                console.print(
+                    f"  [yellow]⚠ {len(distilled.failed)} Seiten ohne Destillat[/yellow] — "
+                    "der naechste Lauf versucht sie erneut."
+                )
+
             inv_path = data / inv_path_name
-            inv_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Zwei getrennte Kopien: `previous` ist der Vergleichsstand fuer die
+            # Fingerprints, `inventory` wird fortgeschrieben.
+            previous = load_inventory(inv_path)
+            inventory = load_inventory(inv_path)
 
-            # Knowledge Graph extrahieren (sprachabhaengig — graph-<lang>/ bzw. graph/)
-            graph = phase_graph(raw_files, graph_dir, effective_model, prompts)
+            console.print("\n[bold blue]Phase 2:[/bold blue] Inventar fortschreiben...")
+            emptied = prune(inventory, set(distilled.distillates))
+            assign_new(
+                inventory, distilled.distillates, effective_model,
+                prompts.assign, call_llm,
+            )
+            save_inventory(inv_path, inventory)
+            console.print(f"  [green]✓[/green] {len(inventory['clusters'])} Cluster")
 
-            created = phase_articles(raw_files, inventory, wiki_dir, effective_model, prompts)
-            phase_index(inventory, created, wiki_dir, effective_model, prompts)
-            phase_lint(wiki_dir, effective_model, prompts)
+            created, written = phase_articles(
+                distilled.distillates, inventory, previous, wiki_dir,
+                effective_model, prompts, call_llm, jobs=jobs,
+            )
+
+            for slug in emptied:
+                stale = wiki_dir / f"{slug}.md"
+                if stale.exists():
+                    stale.unlink()
+
+            # Index und Lint nur, wenn sich am Artikelbestand etwas geaendert
+            # hat — sonst schrieben sie bei jedem Lauf denselben Inhalt neu und
+            # ein unveraenderter Lauf waere nie wirklich gratis.
+            if written or emptied or not (wiki_dir / "_index.md").exists():
+                langs = [d.get("language") for d in distilled.distillates.values()
+                         if d.get("language")]
+                dominant = Counter(langs).most_common(1)[0][0] if langs else ""
+                phase_index(inventory, created, wiki_dir, effective_model, prompts,
+                            lang=dominant)
+
+            phase_graph(distilled.distillates, graph_dir, effective_model, prompts)
+
+            if written or emptied or not (wiki_dir / "_lint-report.md").exists():
+                phase_lint(wiki_dir, effective_model, prompts)
+            else:
+                console.print("\n[dim]Lint uebersprungen — Artikelbestand unveraendert.[/dim]")
     except illico_llm.LLMAuthError as exc:
         console.print(f"[red]✗ LLM authentication failed: {exc}[/red]")
         console.print("  Check your provider API key and ILLICO_ANSWER_MODEL.")
