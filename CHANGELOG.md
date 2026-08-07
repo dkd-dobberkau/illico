@@ -2,6 +2,21 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.3.1 — Packaging-Fix (v0.3.0 nicht verwenden)
+
+**v0.3.0 ist unbrauchbar und wurde zurückgezogen.** Die Wheel-Whitelist in
+`pyproject.toml` (`only-include`) ist explizit, und die beiden neuen Module
+`illico_distill.py` und `illico_inventory.py` fehlten darin — sie wurden nicht
+ausgeliefert. `import illico_compile` funktionierte weiterhin (die Module werden
+lazy importiert), ein echter Compile brach dann aber mit `ModuleNotFoundError`
+ab. Wer v0.3.0 installiert hat, hebt bitte auf v0.3.1.
+
+Die CI hatte keine Chance, das zu sehen: sie führt pytest gegen den Quellbaum
+aus, nie gegen das gebaute Paket. Neu ist deshalb
+`tests/test_packaging_completeness.py` — es vergleicht die Module im
+Repo-Wurzelverzeichnis mit der Whitelist und schlägt in beide Richtungen an
+(vergessenes Modul, verwaister Eintrag).
+
 ## v0.3.0 — Inkrementeller Compile über eine Destillat-Schicht
 
 Der Compile verarbeitete bisher bei jedem Lauf die gesamte Site neu. Bei ~16.000

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "illico"
-version = "0.3.0"
+version = "0.3.1"
 description = "Websites in eine abfragbare Wissensbasis verwandeln — crawl, compile-to-wiki, chat. Kein RAG, keine Vektor-DB."
 readme = "README.md"
 license = { text = "MIT" }
@@ -39,7 +39,7 @@ only-include = [
   "illico_ingest.py", "illico_compile.py", "illico_chat.py", "illico_chat_core.py",
   "illico_graph.py", "illico_llm.py", "illico_canonicalize.py", "illico_crawl_status.py",
   "illico_frontmatter.py", "illico_context.py", "illico_app.py", "illico_single.py",
-  "illico_testing.py",
+  "illico_testing.py", "illico_distill.py", "illico_inventory.py",
 ]
 sources = ["."]
 force-include = { "illico_index.html" = "illico_index.html" }
