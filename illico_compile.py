@@ -11,6 +11,8 @@ Usage:
 
 import os
 import json
+import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from dotenv import load_dotenv
@@ -976,21 +978,28 @@ def phase_graph(
     return graph
 
 
-def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
-    """Guarantees YAML frontmatter with sources on every compiled article.
+_SOURCES_LINE = re.compile(r"^sources:.*$", re.MULTILINE)
 
-    If the LLM omitted the frontmatter block (common with weaker models), this
-    function prepends a minimal one derived from the known source file list so
-    that downstream domain-based filtering (e.g. Cloud's per-tenant article
-    filter) always has data to work with.
+
+def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
+    """Garantiert Frontmatter und setzt `sources` IMMER selbst.
+
+    Frueher durfte das LLM die sources schreiben — es kuerzte dabei Pfade auf
+    Dateinamen (`unterordner/aktuelles.md` → `aktuelles.md`), was dem
+    Cloud-Overlay die Domain-Zuordnung zerschoss. Die Quellen sind bekannt,
+    also werden sie programmatisch gesetzt statt erraten.
     """
+    sources_yaml = json.dumps(sorted(source_files), ensure_ascii=False)
     text = content.lstrip()
-    has_frontmatter = text.startswith("---") or text.startswith("```yaml")
-    if has_frontmatter:
-        return content
+
+    if text.startswith("---") or text.startswith("```yaml"):
+        if _SOURCES_LINE.search(text):
+            return _SOURCES_LINE.sub(f"sources: {sources_yaml}", text, count=1)
+        # Frontmatter ohne sources: direkt nach dem Opener einfuegen.
+        opener_end = text.index("\n") + 1
+        return text[:opener_end] + f"sources: {sources_yaml}\n" + text[opener_end:]
 
     title_yaml = json.dumps(title, ensure_ascii=False)
-    sources_yaml = json.dumps(source_files, ensure_ascii=False)
     today = datetime.now().strftime("%Y-%m-%d")
     injected = (
         f'---\ntitle: {title_yaml}\nsources: {sources_yaml}\ncompiled: "{today}"\n---\n\n'
@@ -999,62 +1008,68 @@ def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[
 
 
 def phase_articles(
-    raw_files: dict,
+    distillates: dict,
     inventory: dict,
+    previous: dict,
     wiki_dir: Path,
     model: str,
     prompts: Prompts,
-) -> list[str]:
-    """Phase 2: Pro Cluster einen Wiki-Artikel generieren."""
-    console.print("\n[bold blue]Phase 2:[/bold blue] Wiki-Artikel schreiben...")
+    call,
+    jobs: int = 4,
+) -> list[tuple[str, str]]:
+    """Phase 3: Artikel schreiben — nur fuer Cluster mit geaendertem Fingerprint.
 
+    Es wird NICHTS pauschal geloescht. Frueher raeumte diese Phase zuerst alle
+    Artikel weg, wodurch das Wiki waehrend jedes Laufs unvollstaendig und nach
+    einem Abbruch ein Torso war.
+    """
+    from illico_inventory import changed_clusters
+
+    console.print("\n[bold blue]Phase 3:[/bold blue] Wiki-Artikel schreiben...")
     wiki_dir.mkdir(parents=True, exist_ok=True)
-    # Alte Artikel aus vorigen Compile-Läufen entfernen damit keine Orphans
-    # mit fehlendem Frontmatter die Tenant-Sicht verunreinigen. Underscore-
-    # Dateien (_index.md, _lint-report.md) werden von späteren Phasen geschrieben.
-    for old in wiki_dir.glob("*.md"):
-        if not old.name.startswith("_"):
-            old.unlink()
 
-    created_articles = []
-    clusters = inventory.get("clusters", [])
+    changed = {c["slug"] for c in changed_clusters(inventory, previous)}
+    todo = [
+        cluster for cluster in inventory.get("clusters", [])
+        if cluster["slug"] in changed
+        or not (wiki_dir / f"{cluster['slug']}.md").exists()
+    ]
 
-    for i, cluster in enumerate(clusters):
-        name = cluster.get("name", f"Artikel {i+1}")
-        slug = cluster.get("slug", f"artikel-{i+1}")
-        source_files = cluster.get("files", [])
+    if not todo:
+        console.print("  [dim]keine Aenderungen — kein Artikel neu geschrieben[/dim]")
+    else:
+        console.print(
+            f"  [dim]{len(todo)}/{len(inventory.get('clusters', []))} Artikel betroffen[/dim]"
+        )
 
-        console.print(f"  [dim]→ {name}[/dim]")
+    known = [f"  {c['slug']} → {c['name']}" for c in inventory.get("clusters", [])]
 
-        # Quellen zusammenstellen
-        sources_content = ""
-        for fname in source_files[:5]:  # Max 5 Quelldateien pro Artikel
-            if fname in raw_files:
-                sources_content += f"**{fname}:**\n{raw_files[fname][:2000]}\n\n"
+    def write(cluster: dict) -> None:
+        members = [distillates[h] for h in cluster["members"] if h in distillates]
+        sources_content = "\n\n".join(
+            f"**{d.get('title', '')}**\n{d.get('summary', '')}\n"
+            + "\n".join(f"- {k}" for k in d.get("keypoints", []))
+            for d in members
+        )
+        source_files = sorted({s for d in members for s in d.get("sources", [])})
 
-        if not sources_content:
-            # Fallback: alle raw-Dateien anteilig
-            sources_content = truncate_for_context(raw_files, max_chars=6000)
-
-        known = [f"  {c.get('slug', 'unknown')} → {c.get('name', '?')}" for c in clusters if c.get("name") != name]
         prompt = prompts.article.format(
-            topic=name,
-            sources=sources_content[:6000],
-            known_articles="\n".join(known[:20])
+            topic=cluster["name"],
+            sources=sources_content,
+            known_articles="\n".join(known[:40]),
         ).replace("DATUM", datetime.now().strftime("%Y-%m-%d"))
 
-        with console.status(f"[dim]{name}...[/dim]"):
-            content = call_llm(prompt, model, max_tokens=4000)
+        content = call(prompt, model, 4000)
+        content = _ensure_frontmatter(content, cluster["slug"], cluster["name"], source_files)
+        (wiki_dir / f"{cluster['slug']}.md").write_text(content, encoding="utf-8")
+        console.print(f"  [green]✓[/green] {cluster['slug']}.md")
 
-        content = _ensure_frontmatter(content, slug, name, source_files)
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for future in [pool.submit(write, c) for c in todo]:
+                future.result()
 
-        # Speichern
-        article_path = wiki_dir / f"{slug}.md"
-        article_path.write_text(content, encoding="utf-8")
-        created_articles.append((slug, name))
-        console.print(f"  [green]✓[/green] {slug}.md")
-
-    return created_articles
+    return [(c["slug"], c["name"]) for c in inventory.get("clusters", [])]
 
 
 def phase_index(
