@@ -1073,8 +1073,31 @@ def phase_articles(
             for future in [pool.submit(write, c) for c in todo]:
                 future.result()
 
+    # Verwaiste Artikel entfernen: Dateien ohne Cluster im Inventar. Das trifft
+    # vor allem den ersten Lauf nach der Umstellung — dort wird das Inventar neu
+    # geschnitten und vergibt neue Slugs, die alten Artikel gehoerten danach zu
+    # nichts mehr und stuenden ohne Aufraeumen neben den neuen.
+    slugs = {cluster["slug"] for cluster in inventory.get("clusters", [])}
+    removed: list[str] = []
+    if slugs:
+        # Ein LEERES Inventar heisst "etwas ist schiefgegangen", nicht
+        # "loesch alles" — sonst raeumt ein gescheiterter Zuordnungsschritt
+        # das ganze Wiki leer.
+        for path in sorted(wiki_dir.glob("*.md")):
+            if path.name.startswith("_") or path.stem in slugs:
+                continue
+            path.unlink()
+            removed.append(path.stem)
+        if removed:
+            console.print(
+                f"  [dim]{len(removed)} verwaiste Artikel entfernt "
+                f"(kein Cluster mehr im Inventar)[/dim]"
+            )
+
     created = [(c["slug"], c["name"]) for c in inventory.get("clusters", [])]
-    return created, [c["slug"] for c in todo]
+    # Geschrieben UND entfernt zaehlen als Aenderung: sonst zeigt der Index
+    # weiter auf Dateien, die es nicht mehr gibt.
+    return created, [c["slug"] for c in todo] + removed
 
 
 def phase_index(
@@ -1300,11 +1323,6 @@ def compile(
                 distilled.distillates, inventory, previous, wiki_dir,
                 effective_model, prompts, call_llm, jobs=jobs,
             )
-
-            for slug in emptied:
-                stale = wiki_dir / f"{slug}.md"
-                if stale.exists():
-                    stale.unlink()
 
             # Index und Lint nur, wenn sich am Artikelbestand etwas geaendert
             # hat — sonst schrieben sie bei jedem Lauf denselben Inhalt neu und

@@ -198,3 +198,70 @@ def test_article_prompt_without_language_stays_silent(tmp_path: Path):
                    wiki, "m", get_prompts("de"), call, jobs=1)
 
     assert "Sprache der Quellen:" not in call.prompts[0]
+
+
+# --- Migration: verwaiste Artikel aus der Zeit vor dem Inventar-Neuschnitt ---
+
+def test_orphan_articles_are_removed(tmp_path: Path):
+    """Beim ersten Lauf nach der Umstellung wird das Inventar neu geschnitten
+    und vergibt neue Slugs. Die Artikel unter den ALTEN Slugs gehoeren keinem
+    Cluster mehr — ohne Aufraeumen stuenden alte und neue nebeneinander."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "alter-slug.md").write_text("Aus der alten Pipeline", encoding="utf-8")
+    (wiki / "noch-einer.md").write_text("Auch alt", encoding="utf-8")
+    inv = {"schema": 1, "clusters": [_cluster("neuer-slug", ["sha256:1"])]}
+
+    phase_articles(_distillates("sha256:1"), inv, {"clusters": []},
+                   wiki, "m", get_prompts("de"), Call(), jobs=1)
+
+    assert (wiki / "neuer-slug.md").exists()
+    assert not (wiki / "alter-slug.md").exists()
+    assert not (wiki / "noch-einer.md").exists()
+
+
+def test_orphan_cleanup_spares_underscore_files(tmp_path: Path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "_index.md").write_text("Index", encoding="utf-8")
+    (wiki / "_lint-report.md").write_text("Lint", encoding="utf-8")
+    inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
+
+    phase_articles(_distillates("sha256:1"), inv, {"clusters": []},
+                   wiki, "m", get_prompts("de"), Call(), jobs=1)
+
+    assert (wiki / "_index.md").exists()
+    assert (wiki / "_lint-report.md").exists()
+
+
+def test_empty_inventory_never_wipes_the_wiki(tmp_path: Path):
+    """Ein leeres Inventar heisst "etwas ist schiefgegangen", nicht "loesch
+    alles". Sonst raeumt ein gescheiterter Zuordnungsschritt das Wiki leer."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "bestand.md").write_text("Wichtig", encoding="utf-8")
+
+    phase_articles({}, {"schema": 1, "clusters": []}, {"clusters": []},
+                   wiki, "m", get_prompts("de"), Call(), jobs=1)
+
+    assert (wiki / "bestand.md").exists()
+
+
+def test_removed_orphans_count_as_a_change(tmp_path: Path):
+    """Verschwundene Artikel muessen Index und Lint ausloesen — sonst zeigt
+    der Index weiter auf Dateien, die es nicht mehr gibt."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    (wiki / "a.md").write_text("x", encoding="utf-8")
+    (wiki / "verwaist.md").write_text("alt", encoding="utf-8")
+    inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
+    d = _distillates("sha256:1")
+    phase_articles(d, inv, {"clusters": []}, wiki, "m", get_prompts("de"), Call(), jobs=1)
+
+    # zweiter Lauf: nichts geaendert, aber ein Waisenkind taucht auf
+    (wiki / "wieder-verwaist.md").write_text("alt", encoding="utf-8")
+    _created, changed = phase_articles(d, inv, inv, wiki, "m", get_prompts("de"),
+                                       Call(), jobs=1)
+
+    assert changed  # nicht leer → Index und Lint laufen
+    assert not (wiki / "wieder-verwaist.md").exists()

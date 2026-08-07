@@ -2,6 +2,30 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.3.2 — Migrations-Fix: verwaiste Artikel werden entfernt
+
+Beim ersten Lauf nach der Umstellung wird das Inventar neu geschnitten und
+vergibt neue Slugs. Die Artikel unter den **alten** Slugs gehörten danach zu
+keinem Cluster mehr — und weil v0.3.0 das Pauschal-Löschen bewusst abgeschafft
+hat, blieben sie liegen. Ein bestehendes Wiki hätte nach dem ersten Lauf alte
+und neue Artikel nebeneinander enthalten.
+
+`phase_articles` entfernt jetzt Artikeldateien, zu denen es keinen Cluster im
+Inventar gibt. Zwei Sicherungen dagegen, dass daraus ein Kahlschlag wird:
+
+- Ein **leeres** Inventar löst gar nichts aus — das heißt „etwas ist
+  schiefgegangen", nicht „lösch alles". Sonst räumte ein gescheiterter
+  Zuordnungsschritt das ganze Wiki leer.
+- Underscore-Dateien (`_index.md`, `_lint-report.md`) sind ausgenommen.
+
+Entfernte Artikel zählen als Änderung und lösen Index und Lint aus — sonst
+zeigte der Index weiter auf Dateien, die es nicht mehr gibt. `phase_articles`
+liefert sie deshalb im zweiten Rückgabewert mit.
+
+Die separate Behandlung leer gewordener Cluster im Orchestrator entfällt: `prune`
+entfernt sie vor der Artikel-Phase aus dem Inventar, womit ihre Artikel ohnehin
+Waisen sind.
+
 ## v0.3.1 — Packaging-Fix (v0.3.0 nicht verwenden)
 
 **v0.3.0 ist unbrauchbar und wurde zurückgezogen.** Die Wheel-Whitelist in
