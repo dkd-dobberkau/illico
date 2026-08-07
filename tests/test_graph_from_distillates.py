@@ -130,6 +130,72 @@ def test_no_llm_call_for_extraction(tmp_path: Path, monkeypatch):
     phase_graph({"sha256:1": _d("sha256:1", [])}, tmp_path / "graph", "m", get_prompts("de"))
 
 
+class CountingCanonicalize:
+    """Zaehlt Aufrufe — canonicalize_graph ist der teure Teil der Graph-Phase
+    (ein LLM-Call je Label-Block)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, graph, model, prompts):
+        self.calls += 1
+        return graph
+
+
+def test_graph_is_skipped_when_distillates_unchanged(tmp_path: Path, monkeypatch):
+    """Ohne diesen Skip kostet JEDER Lauf die Kanonisierung neu — bei einem
+    grossen Graphen sind das dutzende LLM-Calls fuer ein identisches Ergebnis."""
+    canon = CountingCanonicalize()
+    monkeypatch.setattr(illico_compile, "canonicalize_graph", canon)
+    distillates = {"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}])}
+    graph_dir = tmp_path / "graph"
+
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+    assert canon.calls == 1
+
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+    assert canon.calls == 1
+
+
+def test_skipped_graph_still_returns_the_stored_graph(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(illico_compile, "canonicalize_graph", CountingCanonicalize())
+    distillates = {"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}])}
+    graph_dir = tmp_path / "graph"
+
+    first = phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+    second = phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+
+    assert second["nodes"] == first["nodes"]
+    assert second["edges"] == first["edges"]
+
+
+def test_graph_is_rebuilt_when_distillates_change(tmp_path: Path, monkeypatch):
+    canon = CountingCanonicalize()
+    monkeypatch.setattr(illico_compile, "canonicalize_graph", canon)
+    graph_dir = tmp_path / "graph"
+
+    phase_graph({"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}])},
+                graph_dir, "m", get_prompts("de"))
+    phase_graph({"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}]),
+                 "sha256:2": _d("sha256:2", [{"name": "B", "label": "Ding", "props": {}}])},
+                graph_dir, "m", get_prompts("de"))
+
+    assert canon.calls == 2
+
+
+def test_graph_is_rebuilt_when_nodes_file_missing(tmp_path: Path, monkeypatch):
+    canon = CountingCanonicalize()
+    monkeypatch.setattr(illico_compile, "canonicalize_graph", canon)
+    distillates = {"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}])}
+    graph_dir = tmp_path / "graph"
+
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+    (graph_dir / "nodes.json").unlink()
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+
+    assert canon.calls == 2
+
+
 def test_canonicalize_is_still_applied(tmp_path: Path, monkeypatch):
     seen = {}
 

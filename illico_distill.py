@@ -92,6 +92,8 @@ def group_pages(raw_files: dict[str, str]) -> dict[str, dict]:
     Inhaltsgleiche Seiten unter verschiedenen Pfaden teilen sich einen Hash und
     damit ein Destillat — das spart Calls auf Sites mit vielen Dubletten.
     """
+    from illico_compile import _extract_frontmatter_language
+
     groups: dict[str, dict] = {}
     for rel in sorted(raw_files):
         content = raw_files[rel]
@@ -102,6 +104,9 @@ def group_pages(raw_files: dict[str, str]) -> dict[str, dict]:
                 "hash": digest,
                 "sources": [rel],
                 "domain": extract_raw_domain(content) or "",
+                # Ohne die Quellsprache entstehen aus englischen Seiten deutsche
+                # Destillate und daraus deutsche Artikel.
+                "language": _extract_frontmatter_language(content) or "",
                 "content": content,
             }
         else:
@@ -117,7 +122,8 @@ def _strip_frontmatter(text: str) -> str:
 def _build_batch_prompt(prompt: str, batch: list[dict], max_chars: int = 4000) -> str:
     parts = [prompt]
     for index, page in enumerate(batch):
-        parts.append(f"### PAGE p{index}")
+        lang = page.get("language") or "unbekannt"
+        parts.append(f"### PAGE p{index} (Sprache: {lang})")
         parts.append(_strip_frontmatter(page["content"])[:max_chars])
         parts.append("")
     return "\n".join(parts)
@@ -152,6 +158,7 @@ def _distill_batch(batch, model, prompt, call) -> tuple[dict, list]:
             "hash": page["hash"],
             "sources": page["sources"],
             "domain": page["domain"],
+            "language": page.get("language", ""),
             "title": item.get("title", ""),
             "summary": item.get("summary", ""),
             "keypoints": item.get("keypoints", []),

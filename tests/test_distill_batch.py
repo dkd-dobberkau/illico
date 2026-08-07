@@ -185,3 +185,39 @@ def test_parallel_jobs_produce_same_result(tmp_path: Path):
 
     assert len(result.distillates) == 40
     assert result.failed == []
+
+
+def test_distillate_carries_source_language(tmp_path: Path):
+    """Ohne die Sprache der Quellseite entstehen aus englischen Seiten deutsche
+    Destillate und daraus deutsche Artikel — die alte Pipeline schrieb Artikel
+    in der Sprache der Quellen."""
+    raw = {"s.md": '---\ntitle: "T"\ndomain: "example.com"\ncrawled: "2026-08-06"\n'
+                   'language: "en"\n---\n\nBody\n'}
+    store = DistillStore(tmp_path / "d")
+    result = distill_all(raw, store, "test-model", _PROMPT, RecordingCall(), jobs=1)
+
+    d = next(iter(result.distillates.values()))
+    assert d["language"] == "en"
+
+
+def test_batch_prompt_states_the_page_language(tmp_path: Path):
+    """Die Sprache muss im Prompt stehen, sonst kann das LLM sie nicht halten."""
+    raw = {"s.md": '---\ntitle: "T"\ndomain: "example.com"\nlanguage: "en"\n---\n\nBody\n'}
+    store = DistillStore(tmp_path / "d")
+    seen = {}
+
+    def capture(prompt, model, max_tokens=2000):
+        seen["prompt"] = prompt
+        ids = [line.split()[2] for line in prompt.splitlines() if line.startswith("### PAGE ")]
+        return _response_for([{"id": i} for i in ids])
+
+    distill_all(raw, store, "test-model", _PROMPT, capture, jobs=1)
+    assert "en" in seen["prompt"].split("### PAGE p0")[1].splitlines()[0]
+
+
+def test_missing_language_does_not_break(tmp_path: Path):
+    raw = {"s.md": '---\ntitle: "T"\ndomain: "example.com"\n---\n\nBody\n'}
+    store = DistillStore(tmp_path / "d")
+    result = distill_all(raw, store, "test-model", _PROMPT, RecordingCall(), jobs=1)
+
+    assert next(iter(result.distillates.values()))["language"] == ""

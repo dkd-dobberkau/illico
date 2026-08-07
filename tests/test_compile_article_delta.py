@@ -154,3 +154,47 @@ def test_ensure_frontmatter_still_injects_when_missing():
     out = _ensure_frontmatter("Nur Text\n", "slug", "Titel", ["a/b.md"])
     assert out.startswith("---")
     assert "a/b.md" in out
+
+
+def _distillates_lang(lang: str):
+    return {"sha256:1": {"hash": "sha256:1", "title": "T", "summary": "S",
+                         "keypoints": [], "entities": [], "edges": [],
+                         "language": lang, "sources": ["ordner/1.md"]}}
+
+
+class CapturingCall:
+    def __init__(self):
+        self.prompts = []
+
+    def __call__(self, prompt, model, max_tokens=2000):
+        self.prompts.append(prompt)
+        return "# Artikel\n\nText.\n"
+
+
+def test_article_prompt_states_the_source_language(tmp_path: Path):
+    """Der Artikel-Prompt ist deutsch und der Cluster-Name kommt aus einem
+    deutschen Zuordnungsschritt — ohne explizite Ansage schreibt das Modell
+    deutsche Artikel ueber englische Quellen."""
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
+    call = CapturingCall()
+
+    phase_articles(_distillates_lang("en"), inv, {"clusters": []},
+                   wiki, "m", get_prompts("de"), call, jobs=1)
+
+    # Exakte Direktive, nicht bloss "en" irgendwo — das steckt in jedem
+    # deutschen Wort wie "Regeln" und waere ein falsch gruener Test.
+    assert "Sprache der Quellen: en" in call.prompts[0]
+
+
+def test_article_prompt_without_language_stays_silent(tmp_path: Path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
+    call = CapturingCall()
+
+    phase_articles(_distillates_lang(""), inv, {"clusters": []},
+                   wiki, "m", get_prompts("de"), call, jobs=1)
+
+    assert "Sprache der Quellen:" not in call.prompts[0]

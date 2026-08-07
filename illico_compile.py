@@ -10,8 +10,10 @@ Usage:
 """
 
 import os
+import hashlib
 import json
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,7 +183,8 @@ Regeln:
 - Nutze NUR Slugs aus der Liste oben — keine erfundenen Links
 - Strukturiere mit ## Überschriften
 - Maximal 600 Wörter
-- Schreibe in der Sprache der Quellen
+- Schreibe in der Sprache der Quellen. Ist oben eine "Sprache der Quellen"
+  angegeben, ist DIESE verbindlich — auch wenn diese Anweisung deutsch ist.
 - Erfinde nichts — nur was in den Quellen steht
 - Frontmatter im YAML-Format oben
 
@@ -208,7 +211,8 @@ Die _index.md soll:
 - Eine kurze Beschreibung der Wissensbasis enthalten
 - Alle Artikel mit einem Satz Beschreibung auflisten
 - Obsidian-Links mit Slug als Ziel verwenden: [[slug|Anzeigename]] (z.B. [[typo3-solutions|TYPO3-Lösungen]])
-- Auf Deutsch oder Englisch (je nach Domain-Sprache)
+- Ist oben eine "Sprache der Quellen" angegeben, ist DIESE verbindlich —
+  auch wenn diese Anweisung deutsch ist. Sonst nach Domain-Sprache.
 - Einen Abschnitt "Wie diese Wiki entstand" enthalten (Illico, Karpathy-Methode)
 
 Schreibe NUR den Markdown-Inhalt, kein JSON.
@@ -459,6 +463,8 @@ Antworte AUSSCHLIESSLICH mit JSON in dieser Form:
 
 Regeln:
 - Die `id` MUSS exakt der Kennung der Seite entsprechen (p0, p1, ...).
+- Schreibe `title`, `summary` und `keypoints` in der SPRACHE DER SEITE (hinter
+  der Kennung angegeben). Eine englische Seite bekommt ein englisches Destillat.
 - Erfinde nichts. Was nicht auf der Seite steht, kommt nicht ins Destillat.
 - `entities` nur fuer benannte Dinge, nicht fuer Allerweltsbegriffe.
 - `edges` nur zwischen Entitaeten, die du in `entities` derselben Seite nennst.
@@ -487,6 +493,8 @@ Respond ONLY with JSON in this shape:
 
 Rules:
 - The `id` MUST match the page marker exactly (p0, p1, ...).
+- Write `title`, `summary` and `keypoints` in the LANGUAGE OF THE PAGE (stated
+  after the marker). A German page gets a German distillate.
 - Invent nothing. What is not on the page does not go into the distillate.
 - `entities` only for named things, not generic terms.
 - `edges` only between entities you list under `entities` of the same page.
@@ -871,6 +879,29 @@ def phase_graph(
     """
     console.print("\n[bold blue]Phase 5:[/bold blue] Knowledge Graph zusammenfuehren...")
 
+    # Der Merge selbst ist billig, die Kanonisierung nicht: sie kostet einen
+    # LLM-Call je Label-Block. Ohne diesen Skip zahlt JEDER Lauf sie neu — bei
+    # einem grossen Graphen dutzende Calls fuer ein identisches Ergebnis.
+    fingerprint = "sha256:" + hashlib.sha256(
+        "\n".join(sorted(distillates)).encode("utf-8")
+    ).hexdigest()
+    nodes_path = graph_dir / "nodes.json"
+    edges_path = graph_dir / "edges.json"
+    meta_path = graph_dir / "meta.json"
+
+    if nodes_path.exists() and edges_path.exists() and meta_path.exists():
+        try:
+            stored = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            stored = {}
+        if stored.get("fingerprint") == fingerprint:
+            nodes = json.loads(nodes_path.read_text(encoding="utf-8"))
+            edges = json.loads(edges_path.read_text(encoding="utf-8"))
+            console.print(
+                f"  [dim]unveraendert — {len(nodes)} Nodes, {len(edges)} Edges uebernommen[/dim]"
+            )
+            return {"nodes": nodes, "edges": edges}
+
     nodes_by_name: dict[str, dict] = {}
     for digest in sorted(distillates):
         for entity in distillates[digest].get("entities", []):
@@ -909,17 +940,18 @@ def phase_graph(
     graph = canonicalize_graph(graph, model, prompts)
 
     graph_dir.mkdir(parents=True, exist_ok=True)
-    (graph_dir / "nodes.json").write_text(
+    nodes_path.write_text(
         json.dumps(graph["nodes"], ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (graph_dir / "edges.json").write_text(
+    edges_path.write_text(
         json.dumps(graph.get("edges", []), ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (graph_dir / "meta.json").write_text(
+    meta_path.write_text(
         json.dumps({
             "name": "Illico Knowledge Graph",
             "description": f"Extrahiert aus {len(distillates)} Destillaten",
             "compiled": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "fingerprint": fingerprint,
         }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -1010,6 +1042,15 @@ def phase_articles(
         )
         source_files = sorted({s for d in members for s in d.get("sources", [])})
 
+        # Sprache explizit ansagen. Der Artikel-Prompt ist deutsch und der
+        # Cluster-Name stammt aus einem ebenfalls deutschen Zuordnungsschritt —
+        # gegen diesen doppelten Kontext ist "schreibe in der Sprache der
+        # Quellen" zu schwach, und englische Sites bekaemen deutsche Artikel.
+        langs = [d.get("language") for d in members if d.get("language")]
+        if langs:
+            dominant = Counter(langs).most_common(1)[0][0]
+            sources_content = f"Sprache der Quellen: {dominant}\n\n" + sources_content
+
         prompt = prompts.article.format(
             topic=cluster["name"],
             sources=sources_content,
@@ -1036,11 +1077,18 @@ def phase_index(
     wiki_dir: Path,
     model: str,
     prompts: Prompts,
+    lang: str = "",
 ) -> None:
-    """Phase 3: _index.md als Einstiegspunkt der Wiki erstellen."""
-    console.print("\n[bold blue]Phase 3:[/bold blue] Index erstellen...")
+    """Phase 4: _index.md als Einstiegspunkt der Wiki erstellen.
+
+    `lang` ist die vorherrschende Sprache der Quellen. Ohne sie begruesst eine
+    englische Wissensbasis ihre Leser auf Deutsch, weil der Prompt deutsch ist.
+    """
+    console.print("\n[bold blue]Phase 4:[/bold blue] Index erstellen...")
 
     article_list = "\n".join(f"  {slug} → {name}" for slug, name in created_articles)
+    if lang:
+        article_list = f"Sprache der Quellen: {lang}\n\n" + article_list
     prompt = prompts.index.format(
         articles=article_list,
         domain=inventory.get("domain", "unbekannt"),
@@ -1256,7 +1304,11 @@ def compile(
             # hat — sonst schrieben sie bei jedem Lauf denselben Inhalt neu und
             # ein unveraenderter Lauf waere nie wirklich gratis.
             if written or emptied or not (wiki_dir / "_index.md").exists():
-                phase_index(inventory, created, wiki_dir, effective_model, prompts)
+                langs = [d.get("language") for d in distilled.distillates.values()
+                         if d.get("language")]
+                dominant = Counter(langs).most_common(1)[0][0] if langs else ""
+                phase_index(inventory, created, wiki_dir, effective_model, prompts,
+                            lang=dominant)
 
             phase_graph(distilled.distillates, graph_dir, effective_model, prompts)
 
