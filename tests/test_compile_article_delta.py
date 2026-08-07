@@ -120,8 +120,12 @@ def test_underscore_files_are_never_deleted(tmp_path: Path):
 
 
 def test_sources_are_full_relative_paths(tmp_path: Path):
-    """Regression zu MR !19 im Cloud-Repo: das LLM kuerzte Pfade auf Basenames,
-    wodurch Artikel faelschlich als Cross-Tenant-Leak verworfen wurden."""
+    """Regression: das LLM kuerzte Quellpfade auf den blossen Dateinamen
+    (`ordner/aktuelles.md` → `aktuelles.md`). Kommt derselbe Name unter mehreren
+    Domains vor, laesst sich die Quelle danach nicht mehr eindeutig zuordnen —
+    in einem Multi-Domain-Setup verschwanden dadurch Artikel aus der Sicht ihres
+    Eigentuemers. Die Quellen sind bekannt, also werden sie gesetzt, nicht
+    erraten."""
     wiki = tmp_path / "wiki"
     wiki.mkdir()
     inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
