@@ -257,3 +257,27 @@ def test_fallback_slug_from_title_is_sanitised():
     slug = inv["clusters"][0]["slug"]
     assert "/" not in slug and ":" not in slug and "!" not in slug
     assert slug == slug.lower()
+
+
+# --- Erstaufbau vs. inkrementelle Zuordnung ---
+
+def test_empty_inventory_is_marked_as_bootstrap():
+    """Bei leerem Inventar ist "bevorzuge bestehende Cluster" die falsche
+    Anweisung — das LLM macht dann einen Sammel-Cluster fuer alles."""
+    from illico_inventory import _build_assign_prompt
+    prompt = _build_assign_prompt("P", [], [_d("sha256:1", "S")])
+    assert "INVENTORY-STATE: EMPTY" in prompt
+
+
+def test_populated_inventory_is_not_marked_as_bootstrap():
+    from illico_inventory import _build_assign_prompt
+    existing = [{"slug": "a", "name": "A", "description": "d"}]
+    prompt = _build_assign_prompt("P", existing, [_d("sha256:1", "S")])
+    assert "INVENTORY-STATE: EMPTY" not in prompt
+    assert "INVENTORY-STATE: 1" in prompt
+
+
+def test_both_assign_prompts_cover_the_bootstrap_case():
+    from illico_compile import get_prompts
+    for lang in ("de", "en"):
+        assert "INVENTORY-STATE: EMPTY" in get_prompts(lang).assign, lang

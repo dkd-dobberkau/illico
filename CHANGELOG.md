@@ -2,6 +2,25 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.3.3 — Erstaufbau clustert wieder thematisch
+
+Der Zuordnungs-Prompt war für den **inkrementellen** Fall geschrieben:
+„Bevorzuge bestehende Cluster, lege nur einen neuen an, wenn wirklich keiner
+passt." Beim Erstaufbau ist das genau die falsche Anweisung — es gibt keine
+bestehenden Cluster, also legte das LLM einen Sammel-Cluster für alles an. Ein
+Tenant mit 5 Seiten bekam so einen einzigen Artikel statt drei; je kleiner die
+Site, desto grober das Ergebnis.
+
+`_build_assign_prompt` schreibt jetzt einen sprachneutralen Zustandsmarker
+(`INVENTORY-STATE: EMPTY` bzw. `INVENTORY-STATE: <Zahl>`) in den Prompt, und
+beide Sprachvarianten unterscheiden daran zwei Regeln: beim Erstaufbau
+thematisch aufteilen (Richtwert ein Cluster je 3–10 Dokumente, höchstens 15 pro
+Antwort, ein Sammel-Cluster ist explizit falsch), danach bestehende Cluster
+bevorzugen. Der Marker ist bewusst maschinell, damit der Prompt-Bau die
+Prompt-Sprache nicht kennen muss.
+
+An einer 5-Seiten-Site gemessen: vorher 1 Cluster, nachher 3.
+
 ## v0.3.2 — Migrations-Fix: verwaiste Artikel werden entfernt
 
 Beim ersten Lauf nach der Umstellung wird das Inventar neu geschnitten und

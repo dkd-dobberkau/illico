@@ -114,7 +114,10 @@ def changed_clusters(inventory: dict, previous: dict) -> list[dict]:
 
 
 def _build_assign_prompt(prompt: str, existing: list[dict], batch: list[dict]) -> str:
-    parts = [prompt, "", "Bestehende Cluster:"]
+    # Sprachneutraler Zustandsmarker statt Prosa: der Prompt kann auf ihn
+    # verweisen, ohne dass dieser Code die Prompt-Sprache kennen muss.
+    state = f"INVENTORY-STATE: {len(existing)}" if existing else "INVENTORY-STATE: EMPTY"
+    parts = [prompt, "", state, "", "Bestehende Cluster:"]
     if existing:
         for cluster in existing:
             parts.append(f"- {cluster['slug']} — {cluster['name']}: {cluster.get('description', '')}")

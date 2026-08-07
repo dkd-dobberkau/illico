@@ -513,7 +513,12 @@ Antworte AUSSCHLIESSLICH mit JSON:
 }
 
 Regeln:
-- Bevorzuge bestehende Cluster. Lege nur einen neuen an, wenn wirklich keiner passt.
+- Steht oben `INVENTORY-STATE: EMPTY`, ist dies der ERSTAUFBAU. Dann gilt das
+  Gegenteil: teile die Dokumente thematisch auf, statt sie zusammenzufassen.
+  Richtwert grob ein Cluster je 3-10 Dokumente, hoechstens 15 pro Antwort. Ein
+  einziger Sammel-Cluster fuer alles ist FALSCH.
+- Sonst (`INVENTORY-STATE: <Zahl>`): bevorzuge bestehende Cluster und lege nur
+  einen neuen an, wenn wirklich keiner passt.
 - Aendere NIEMALS Slug oder Name eines bestehenden Clusters.
 - Slugs sind kleingeschrieben, mit Bindestrichen, ohne Umlaute.
 - Jedes Dokument gehoert in genau einen Cluster.
@@ -529,7 +534,12 @@ Respond ONLY with JSON:
 }
 
 Rules:
-- Prefer existing clusters. Only create a new one if none fits.
+- If `INVENTORY-STATE: EMPTY` appears above, this is the INITIAL BUILD. Then the
+  opposite applies: split the documents thematically instead of lumping them
+  together. Rough guide: one cluster per 3-10 documents, at most 15 per answer.
+  A single catch-all cluster for everything is WRONG.
+- Otherwise (`INVENTORY-STATE: <number>`): prefer existing clusters and only
+  create a new one if none fits.
 - NEVER change the slug or name of an existing cluster.
 - Slugs are lowercase, hyphenated, ASCII only.
 - Every document belongs to exactly one cluster.
