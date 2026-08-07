@@ -2,6 +2,65 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.3.0 — Inkrementeller Compile über eine Destillat-Schicht
+
+Der Compile verarbeitete bisher bei jedem Lauf die gesamte Site neu. Bei ~16.000
+gecrawlten Seiten waren das rund 1.000 Graph-Extraktions-Calls plus ein
+Artikel-Call je Cluster — strikt sequenziell, ohne Wiederaufsetzen, und ein
+Nachcrawl mit 50 neuen Seiten kostete denselben vollen Preis wie der Erstlauf.
+
+- **Destillat-Schicht (neu: `illico_distill.py`):** Jede Rohseite wird einmal zu
+  einem Destillat verdichtet (Kurzfassung, Kernaussagen, Entitäten, Beziehungen)
+  und unter `distill*/v1/<hash>.json` gecacht. Der Hash deckt Rumpf und
+  Frontmatter ab, **ignoriert aber `crawled:`** — sonst würde jeder Nachcrawl den
+  gesamten Cache invalidieren. Batches à 15 Seiten, parallelisiert über `--jobs`.
+- **Persistiertes Inventar (neu: `illico_inventory.py`):** `_inventory*.json` ist
+  jetzt Zustand statt Debug-Artefakt. Slugs sind **unveränderlich**, damit
+  `[[links]]` und Bookmarks Compiles überleben; ein Fingerprint über die
+  Mitglieder entscheidet deterministisch, welche Artikel neu geschrieben werden.
+- **Kein Pauschal-Löschen mehr:** Bisher entfernte die Artikel-Phase zuerst alle
+  Artikel. Das Wiki war dadurch während jedes Laufs unvollständig und nach einem
+  Abbruch ein Torso. Artikel verschwinden jetzt nur, wenn ihr Cluster leer wird.
+- **Graph aus den Destillaten:** `phase_graph` merged die Entitäten der
+  Destillate und kanonisiert sie; der eigene Vollscan über den Rohtext entfällt
+  ersatzlos (`EXTRACT_PROMPT`, `MERGE_GRAPH_PROMPT`, `_extract_graph_batch`).
+  Bei unveränderten Destillaten wird die Phase komplett übersprungen.
+- **Fehlertoleranz:** Ein Batch, der auch nach Retries scheitert, kostet nur
+  seine Seiten statt den ganzen Lauf. Sie werden gezählt, berichtet und beim
+  nächsten Lauf erneut versucht — der Cache heilt sich selbst.
+- **`--jobs N`** (Default 4) parallelisiert Destillation und Artikel-Erzeugung.
+  Die Cluster-Zuordnung bleibt bewusst seriell, sonst erfinden zwei Batches
+  unabhängig denselben Cluster.
+- **Sichere Slugs:** Cluster-Slugs und Titel stammen aus LLM-Output und landen
+  als Dateiname. `slugify()` transliteriert Umlaute und entfernt alles, was ein
+  Pfad sein könnte.
+
+Gemessen an einer realen Site mit 14 Seiten: Erstlauf 1:53, zweiter Lauf ohne
+Änderungen **0,94 s ohne einen einzigen LLM-Aufruf**, Nachcrawl ohne inhaltliche
+Änderung 1,3 s, eine geänderte Seite berührt genau einen von fünf Artikeln.
+
+**Der Erstlauf wird dadurch nicht billiger, eher etwas teurer** — ein Destillat
+produziert mehr Output als die bisherige Graph-Extraktion allein. Der Gewinn
+liegt in den Folgeläufen und darin, dass Artikel nicht mehr aus maximal fünf auf
+2.000 Zeichen gekürzten Quelldateien entstehen, sondern aus allen Destillaten
+ihres Clusters.
+
+### Breaking Changes
+
+- `phase_graph(distillates, …)` statt `phase_graph(raw_files, …)`
+- `phase_articles(distillates, inventory, previous, …) -> (created, written)`
+- `phase_index(…, lang="")` nimmt die Quellsprache entgegen
+- Die `Prompts`-Felder `extract`/`merge_graph` weichen `distill`/`assign`
+- `_inventory*.json` hat ein neues Format. Alt-Inventare ohne `schema` werden
+  erkannt und einmalig neu aufgebaut; bestehende Wikis bleiben unangetastet, bis
+  sie bewusst neu kompiliert werden.
+
+### Vollneubau erzwingen
+
+`distill*/` löschen re-destilliert alles (etwa nach einem Modellwechsel — der
+invalidiert den Cache bewusst nicht). `_inventory*.json` löschen schneidet die
+Themencluster neu, wobei die alten Slugs verloren gehen.
+
 ## v0.2.3 — Collection-/Bookmark-Modus, Docker-Compose, englische README
 
 - **Neuer Ingest-Modus `collection`:** Statt eine Domain zu crawlen, verarbeitet
