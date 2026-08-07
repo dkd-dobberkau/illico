@@ -436,6 +436,97 @@ ARTICLE_PROMPT_DE = ARTICLE_PROMPT
 INDEX_PROMPT_DE = INDEX_PROMPT
 LINT_PROMPT_DE = LINT_PROMPT
 
+
+DISTILL_PROMPT_DE = """Du bist Illico. Verdichte jede der folgenden Webseiten zu einem kompakten Destillat.
+
+Fuer JEDE Seite mit der Kennung `### PAGE pN` lieferst du genau ein Objekt zurueck.
+
+Antworte AUSSCHLIESSLICH mit JSON in dieser Form:
+{
+  "pages": [
+    {
+      "id": "p0",
+      "title": "Praegnanter Titel der Seite",
+      "summary": "3-6 Saetze, die den Inhalt der Seite eigenstaendig wiedergeben.",
+      "keypoints": ["Kernaussage 1", "Kernaussage 2"],
+      "entities": [{"name": "Name", "label": "Organisation|Person|Ort|Produkt|Leistung|Thema", "props": {}}],
+      "edges": [{"src": "Name A", "rel": "gehoert_zu|bietet_an|liegt_in|arbeitet_fuer|verwandt_mit", "dst": "Name B"}]
+    }
+  ]
+}
+
+Regeln:
+- Die `id` MUSS exakt der Kennung der Seite entsprechen (p0, p1, ...).
+- Erfinde nichts. Was nicht auf der Seite steht, kommt nicht ins Destillat.
+- `entities` nur fuer benannte Dinge, nicht fuer Allerweltsbegriffe.
+- `edges` nur zwischen Entitaeten, die du in `entities` derselben Seite nennst.
+- Kein Text ausserhalb des JSON.
+
+Seiten:
+"""
+
+DISTILL_PROMPT_EN = """You are Illico. Condense each of the following web pages into a compact distillate.
+
+For EVERY page marked `### PAGE pN` return exactly one object.
+
+Respond ONLY with JSON in this shape:
+{
+  "pages": [
+    {
+      "id": "p0",
+      "title": "Concise page title",
+      "summary": "3-6 sentences conveying the page content on its own.",
+      "keypoints": ["Key point 1", "Key point 2"],
+      "entities": [{"name": "Name", "label": "Organisation|Person|Place|Product|Service|Topic", "props": {}}],
+      "edges": [{"src": "Name A", "rel": "belongs_to|offers|located_in|works_for|related_to", "dst": "Name B"}]
+    }
+  ]
+}
+
+Rules:
+- The `id` MUST match the page marker exactly (p0, p1, ...).
+- Invent nothing. What is not on the page does not go into the distillate.
+- `entities` only for named things, not generic terms.
+- `edges` only between entities you list under `entities` of the same page.
+- No text outside the JSON.
+
+Pages:
+"""
+
+
+ASSIGN_PROMPT_DE = """Du bist Illico. Ordne neue Dokumente den bestehenden Themen-Clustern zu.
+
+Antworte AUSSCHLIESSLICH mit JSON:
+{
+  "assignments": [{"hash": "sha256:...", "slug": "bestehender-slug"}],
+  "new_clusters": [{"slug": "neuer-slug", "name": "Name", "description": "Kurzbeschreibung", "members": ["sha256:..."]}]
+}
+
+Regeln:
+- Bevorzuge bestehende Cluster. Lege nur einen neuen an, wenn wirklich keiner passt.
+- Aendere NIEMALS Slug oder Name eines bestehenden Clusters.
+- Slugs sind kleingeschrieben, mit Bindestrichen, ohne Umlaute.
+- Jedes Dokument gehoert in genau einen Cluster.
+- Kein Text ausserhalb des JSON.
+"""
+
+ASSIGN_PROMPT_EN = """You are Illico. Assign new documents to existing topic clusters.
+
+Respond ONLY with JSON:
+{
+  "assignments": [{"hash": "sha256:...", "slug": "existing-slug"}],
+  "new_clusters": [{"slug": "new-slug", "name": "Name", "description": "Short description", "members": ["sha256:..."]}]
+}
+
+Rules:
+- Prefer existing clusters. Only create a new one if none fits.
+- NEVER change the slug or name of an existing cluster.
+- Slugs are lowercase, hyphenated, ASCII only.
+- Every document belongs to exactly one cluster.
+- No text outside the JSON.
+"""
+
+
 @dataclass(frozen=True)
 class Prompts:
     inventory: str
@@ -446,6 +537,8 @@ class Prompts:
     article: str
     index: str
     lint: str
+    distill: str
+    assign: str
 
 
 def get_prompts(lang: str | None) -> Prompts:
@@ -463,6 +556,8 @@ def get_prompts(lang: str | None) -> Prompts:
             article=ARTICLE_PROMPT_EN,
             index=INDEX_PROMPT_EN,
             lint=LINT_PROMPT_EN,
+            distill=DISTILL_PROMPT_EN,
+            assign=ASSIGN_PROMPT_EN,
         )
     return Prompts(
         inventory=INVENTORY_PROMPT_DE,
@@ -473,6 +568,8 @@ def get_prompts(lang: str | None) -> Prompts:
         article=ARTICLE_PROMPT_DE,
         index=INDEX_PROMPT_DE,
         lint=LINT_PROMPT_DE,
+        distill=DISTILL_PROMPT_DE,
+        assign=ASSIGN_PROMPT_DE,
     )
 
 

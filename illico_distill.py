@@ -7,7 +7,12 @@ import hashlib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+
+from illico_frontmatter import extract_raw_domain
 
 SCHEMA = 1
 
@@ -73,3 +78,133 @@ class DistillStore:
             json.dumps(distillate, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         os.replace(tmp, path)
+
+
+@dataclass
+class DistillResult:
+    distillates: dict[str, dict] = field(default_factory=dict)
+    failed: list[str] = field(default_factory=list)
+
+
+def group_pages(raw_files: dict[str, str]) -> dict[str, dict]:
+    """{rel: content} → {hash: {hash, sources, domain, content}}.
+
+    Inhaltsgleiche Seiten unter verschiedenen Pfaden teilen sich einen Hash und
+    damit ein Destillat — das spart Calls auf Sites mit vielen Dubletten.
+    """
+    groups: dict[str, dict] = {}
+    for rel in sorted(raw_files):
+        content = raw_files[rel]
+        digest = content_hash(content)
+        entry = groups.get(digest)
+        if entry is None:
+            groups[digest] = {
+                "hash": digest,
+                "sources": [rel],
+                "domain": extract_raw_domain(content) or "",
+                "content": content,
+            }
+        else:
+            entry["sources"].append(rel)
+    return groups
+
+
+def _strip_frontmatter(text: str) -> str:
+    match = _FRONTMATTER.match(text.lstrip("﻿"))
+    return text[match.end():].strip() if match else text.strip()
+
+
+def _build_batch_prompt(prompt: str, batch: list[dict], max_chars: int = 4000) -> str:
+    parts = [prompt]
+    for index, page in enumerate(batch):
+        parts.append(f"### PAGE p{index}")
+        parts.append(_strip_frontmatter(page["content"])[:max_chars])
+        parts.append("")
+    return "\n".join(parts)
+
+
+def _parse_batch(response: str) -> dict[str, dict]:
+    from illico_compile import parse_llm_json  # lokal: vermeidet Import-Zyklus
+
+    data = parse_llm_json(response) or {}
+    return {p["id"]: p for p in data.get("pages", []) if isinstance(p, dict) and p.get("id")}
+
+
+def _distill_batch(batch, model, prompt, call) -> tuple[dict, list]:
+    try:
+        response = call(_build_batch_prompt(prompt, batch), model, 8192)
+        parsed = _parse_batch(response)
+    except Exception:
+        # Ein kaputter Batch darf den Lauf nicht killen. Die Seiten bleiben
+        # ohne Destillat und werden beim naechsten Lauf erneut versucht.
+        return {}, [page["hash"] for page in batch]
+
+    made: dict[str, dict] = {}
+    failed: list[str] = []
+    now = datetime.now().isoformat(timespec="seconds")
+    for index, page in enumerate(batch):
+        item = parsed.get(f"p{index}")
+        if not item:
+            failed.append(page["hash"])
+            continue
+        made[page["hash"]] = {
+            "schema": SCHEMA,
+            "hash": page["hash"],
+            "sources": page["sources"],
+            "domain": page["domain"],
+            "title": item.get("title", ""),
+            "summary": item.get("summary", ""),
+            "keypoints": item.get("keypoints", []),
+            "entities": item.get("entities", []),
+            "edges": item.get("edges", []),
+            "model": model,
+            "created": now,
+        }
+    return made, failed
+
+
+def distill_all(
+    raw_files: dict[str, str],
+    store: DistillStore,
+    model: str,
+    prompt: str,
+    call,
+    jobs: int = 4,
+    batch_size: int = 15,
+) -> DistillResult:
+    """Destilliert alle Seiten, die noch nicht im Store liegen.
+
+    `call(prompt, model, max_tokens) -> str` wird injiziert, damit Tests ohne
+    Netzwerk und ohne Monkeypatching auskommen.
+    """
+    groups = group_pages(raw_files)
+    result = DistillResult()
+
+    todo = []
+    for digest, page in groups.items():
+        cached = store.get(digest)
+        if cached is not None:
+            # sources koennen sich geaendert haben (Seite unter neuem Pfad),
+            # der Inhalt nicht — deshalb aktualisieren statt neu destillieren.
+            cached["sources"] = page["sources"]
+            result.distillates[digest] = cached
+        else:
+            todo.append(page)
+
+    batches = [todo[i:i + batch_size] for i in range(0, len(todo), batch_size)]
+    if not batches:
+        return result
+
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        futures = [
+            pool.submit(_distill_batch, batch, model, prompt, call)
+            for batch in batches
+        ]
+        for future in futures:
+            made, failed = future.result()
+            for digest, distillate in made.items():
+                store.put(distillate)
+                result.distillates[digest] = distillate
+            result.failed.extend(failed)
+
+    return result
