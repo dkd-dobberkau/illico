@@ -882,8 +882,14 @@ def phase_graph(
     # Der Merge selbst ist billig, die Kanonisierung nicht: sie kostet einen
     # LLM-Call je Label-Block. Ohne diesen Skip zahlt JEDER Lauf sie neu — bei
     # einem grossen Graphen dutzende Calls fuer ein identisches Ergebnis.
+    # Die Destillat-Schema-Version gehoert mit hinein: eine Prompt-Erhoehung
+    # destilliert alles neu, die Seiten-Hashes bleiben aber gleich (sie haengen
+    # am Inhalt). Ohne sie bliebe der Graph nach einem Schema-Bump veraltet.
+    import illico_distill
+
     fingerprint = "sha256:" + hashlib.sha256(
-        "\n".join(sorted(distillates)).encode("utf-8")
+        f"v{illico_distill.SCHEMA}\n".encode("utf-8")
+        + "\n".join(sorted(distillates)).encode("utf-8")
     ).hexdigest()
     nodes_path = graph_dir / "nodes.json"
     edges_path = graph_dir / "edges.json"

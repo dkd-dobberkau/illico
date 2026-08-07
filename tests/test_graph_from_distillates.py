@@ -207,3 +207,23 @@ def test_canonicalize_is_still_applied(tmp_path: Path, monkeypatch):
     phase_graph({"sha256:1": _d("sha256:1", [])}, tmp_path / "graph", "m", get_prompts("de"))
 
     assert seen.get("called")
+
+
+def test_graph_fingerprint_covers_the_distill_schema(tmp_path: Path, monkeypatch):
+    """Eine Prompt-/Schema-Erhoehung destilliert alles neu — die Seiten-Hashes
+    bleiben dabei gleich, weil sie am Inhalt haengen. Ohne die Schema-Version im
+    Fingerprint wuerde der Graph faelschlich uebersprungen und bliebe veraltet."""
+    import illico_distill
+
+    canon = CountingCanonicalize()
+    monkeypatch.setattr(illico_compile, "canonicalize_graph", canon)
+    distillates = {"sha256:1": _d("sha256:1", [{"name": "A", "label": "Ding", "props": {}}])}
+    graph_dir = tmp_path / "graph"
+
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+    assert canon.calls == 1
+
+    monkeypatch.setattr(illico_distill, "SCHEMA", illico_distill.SCHEMA + 1)
+    phase_graph(distillates, graph_dir, "m", get_prompts("de"))
+
+    assert canon.calls == 2

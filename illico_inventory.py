@@ -44,6 +44,35 @@ def assigned_hashes(inventory: dict) -> set[str]:
     return {h for c in inventory.get("clusters", []) for h in c.get("members", [])}
 
 
+_UMLAUTS = {
+    "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+    "à": "a", "á": "a", "â": "a", "å": "a",
+    "è": "e", "é": "e", "ê": "e", "ë": "e",
+    "ì": "i", "í": "i", "î": "i", "ï": "i",
+    "ò": "o", "ó": "o", "ô": "o", "õ": "o",
+    "ù": "u", "ú": "u", "û": "u",
+    "ç": "c", "ñ": "n",
+}
+
+
+def slugify(text: str) -> str:
+    """Macht aus beliebigem LLM-Text einen sicheren Dateinamen-Slug.
+
+    Der Slug landet als `wiki/<slug>.md` auf der Platte. Ein "/" darin schriebe
+    in ein Verzeichnis, das es nicht gibt, ".." liefe aus dem Wiki heraus — und
+    weder Cluster-Vorschlag noch Titel kommen aus vertrauenswuerdiger Quelle,
+    auch wenn der Prompt saubere Slugs verlangt.
+    """
+    lowered = (text or "").strip().lower()
+    for source, target in _UMLAUTS.items():
+        lowered = lowered.replace(source, target)
+    cleaned = "".join(char if char.isalnum() else "-" for char in lowered)
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned.strip("-")[:60].strip("-")
+    return cleaned or "thema"
+
+
 def unique_slug(base: str, taken: set[str]) -> str:
     if base not in taken:
         return base
@@ -149,7 +178,7 @@ def assign_new(
                 continue
             # Slug-Kollision: bestehende Cluster behalten ihren Namen, der neue
             # bekommt einen freien Slug.
-            slug = unique_slug(proposal.get("slug") or "thema", set(by_slug))
+            slug = unique_slug(slugify(proposal.get("slug") or ""), set(by_slug))
             cluster = {
                 "slug": slug,
                 "name": proposal.get("name") or slug,
@@ -166,10 +195,7 @@ def assign_new(
         for distillate in batch:
             if distillate["hash"] in placed:
                 continue
-            slug = unique_slug(
-                (distillate.get("title") or "thema").lower().replace(" ", "-")[:60],
-                set(by_slug),
-            )
+            slug = unique_slug(slugify(distillate.get("title") or ""), set(by_slug))
             cluster = {
                 "slug": slug,
                 "name": distillate.get("title") or slug,

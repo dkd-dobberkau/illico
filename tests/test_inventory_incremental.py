@@ -201,3 +201,59 @@ def test_changed_clusters_detects_only_real_changes():
 
     changed = changed_clusters(after, before)
     assert [c["slug"] for c in changed] == ["b"]
+
+
+# --- Slugs muessen Dateinamen sein duerfen ---
+
+def test_slugify_strips_path_separators():
+    """Der Slug wird zu `wiki/<slug>.md`. Ein "/" darin schreibt in ein
+    Unterverzeichnis, das es nicht gibt — oder schlimmer."""
+    from illico_inventory import slugify
+    assert "/" not in slugify("TYPO3 / Neos")
+    assert "\\" not in slugify("a\\b")
+    assert slugify("../../etc/passwd").strip("-") not in ("", ".", "..")
+    assert ".." not in slugify("../../etc/passwd")
+
+
+def test_slugify_transliterates_umlauts():
+    from illico_inventory import slugify
+    assert slugify("Über uns") == "ueber-uns"
+    assert slugify("Grüße & Größe") == "gruesse-groesse"
+
+
+def test_slugify_is_lowercase_and_hyphenated():
+    from illico_inventory import slugify
+    assert slugify("TYPO3 Camp Vienna 2026") == "typo3-camp-vienna-2026"
+
+
+def test_slugify_never_returns_empty():
+    from illico_inventory import slugify
+    assert slugify("///") == "thema"
+    assert slugify("") == "thema"
+
+
+def test_llm_proposed_slug_is_sanitised():
+    """Der Prompt verlangt saubere Slugs — verlassen darf man sich nicht darauf."""
+    inv = {"schema": 1, "clusters": []}
+
+    def call(prompt, model, max_tokens=2000):
+        ids = [line.split()[2] for line in prompt.splitlines() if line.startswith("### DOC ")]
+        return json.dumps({"assignments": [], "new_clusters": [
+            {"slug": "Böse/Slug", "name": "N", "description": "", "members": ids}]})
+
+    assign_new(inv, {"sha256:1": _d("sha256:1", "S")}, "m", "P", call)
+
+    assert inv["clusters"][0]["slug"] == "boese-slug"
+
+
+def test_fallback_slug_from_title_is_sanitised():
+    inv = {"schema": 1, "clusters": []}
+
+    def call(prompt, model, max_tokens=2000):
+        return json.dumps({"assignments": [], "new_clusters": []})
+
+    assign_new(inv, {"sha256:1": _d("sha256:1", "TYPO3 / Neos: Überblick!")}, "m", "P", call)
+
+    slug = inv["clusters"][0]["slug"]
+    assert "/" not in slug and ":" not in slug and "!" not in slug
+    assert slug == slug.lower()
