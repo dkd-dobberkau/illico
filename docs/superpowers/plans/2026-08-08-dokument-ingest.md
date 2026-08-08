@@ -885,14 +885,25 @@ def test_einzelne_datei_ist_auch_zulaessig(bestand: Path):
 
 
 def test_schreibt_je_seite_eine_datei_unter_dem_label(tmp_path, bestand):
+    """Der Textpfad end-to-end: PDF mit Textebene wird zur raw/-Datei, ohne
+    dass ein Modell angefasst wird.
+
+    `threshold=10` ist hier notwendig und der eigentliche Punkt: MINIMAL_PDFs
+    Textebene hat nur 26 Zeichen und ginge unter dem Default von 200 als Scan
+    durch. Mit der niedrigen Schwelle prueft der Test wirklich den kostenlosen
+    Pfad statt nur die Antwort des gefaelschten Modells zurueckzulesen.
+    """
     data = tmp_path / "illico-data"
+    llm = FakeLLM()
     report = docs.ingest_documents(
         target=bestand, data=data, label="handbuecher",
-        model="m", jobs=1, call=FakeLLM(),
+        model="m", jobs=1, threshold=10, call=llm,
     )
     written = sorted((data / "raw" / "handbuecher").glob("*.md"))
     assert len(written) == 2
     assert report.documents == 2
+    assert report.pages_text == 2 and report.pages_vision == 0
+    assert llm.calls == 0, "eine Seite mit Textebene darf kein Modell kosten"
     body = written[0].read_text(encoding="utf-8")
     assert 'domain: "handbuecher"' in body
     assert "Hallo Illico" in body
