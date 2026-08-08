@@ -10,12 +10,14 @@ import base64
 import hashlib
 import io
 import json
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import pypdfium2 as pdfium
 
+import illico_llm
 from illico_inventory import slugify
 
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
@@ -228,3 +230,151 @@ def pending_pages(entry: dict | None, pages_total: int) -> list[int]:
         return list(range(1, pages_total + 1))
     done = set(entry.get("pages_done", []))
     return [n for n in range(1, pages_total + 1) if n not in done]
+
+
+@dataclass
+class IngestReport:
+    documents: int = 0
+    documents_skipped: int = 0
+    non_pdf_skipped: int = 0
+    pages_text: int = 0
+    pages_vision: int = 0
+    pages_failed: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def find_pdfs(target: Path) -> tuple[Path, list[Path], int]:
+    """Sucht rekursiv nach *.pdf. Liefert (wurzel, pdfs, uebersprungene).
+
+    Die Wurzel ist Bezugspunkt fuer den Slug — bei einer Einzeldatei ihr
+    Elternverzeichnis.
+    """
+    if target.is_file():
+        return target.parent, [target], 0
+    pdfs, skipped = [], 0
+    for path in sorted(target.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() == ".pdf":
+            pdfs.append(path)
+        else:
+            skipped += 1
+    return target, pdfs, skipped
+
+
+def ingest_documents(
+    target: Path,
+    data: Path,
+    label: str,
+    model: str = DEFAULT_MODEL,
+    jobs: int = 4,
+    fresh: bool = False,
+    max_pages: int | None = None,
+    threshold: int = DEFAULT_TEXT_THRESHOLD,
+    force_vision: bool = False,
+    dpi: int = DEFAULT_DPI,
+    call=None,
+) -> IngestReport:
+    """Extrahiert alle PDFs unter `target` nach data/raw/<label>/.
+
+    pdfium laeuft bewusst einstraengig: Textextraktion und Rendering passieren
+    sequenziell im Hauptthread (beides CPU-gebunden und schnell), nur die
+    Vision-Aufrufe werden ueber `jobs` gefaechert. PDFium ist nicht ohne
+    Weiteres threadsicher, und die Wartezeit liegt ohnehin im Netz.
+    """
+    if call is None:
+        call = illico_llm.call_sync
+
+    from illico_ingest import detect_language
+
+    root, pdfs, non_pdf = find_pdfs(target)
+    report = IngestReport(non_pdf_skipped=non_pdf)
+
+    out_dir = data / "raw" / label
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = data / MANIFEST_NAME
+    manifest = {} if fresh else load_manifest(manifest_path)
+    budget = max_pages
+
+    for pdf_path in pdfs:
+        rel_source = str(pdf_path.relative_to(root))
+        try:
+            digest = file_hash(pdf_path)
+            pdf = open_document(pdf_path)
+            pages_total = len(pdf)
+        except Exception as exc:
+            report.errors.append(f"{rel_source}: {exc}")
+            continue
+
+        # Schluessel ist der Pfad, der Hash ist der Aenderungsdetektor.
+        # Zwei byte-gleiche PDFs an zwei Pfaden sind zwei Dokumente und
+        # brauchen beide ihre eigenen raw/-Dateien.
+        entry = manifest.get(rel_source)
+        if entry is not None and entry.get("hash") != digest:
+            entry = None
+        todo = pending_pages(entry, pages_total)
+        if not todo:
+            report.documents_skipped += 1
+            continue
+        if budget is not None:
+            todo = todo[:max(0, budget)]
+            if not todo:
+                break
+
+        slug = document_slug(pdf_path, root)
+        title = document_title(pdf, fallback=pdf_path.stem)
+        done = set((entry or {}).get("pages_done", []))
+
+        # Sequenziell im Hauptthread: PDF anfassen. PDFium ist nicht ohne
+        # Weiteres threadsicher, und der Teil ist CPU-gebunden und schnell.
+        prepared: list[PreparedPage] = []
+        for page_no in todo:
+            try:
+                prepared.append(prepare_page(
+                    pdf[page_no - 1], page_no=page_no, threshold=threshold,
+                    force_vision=force_vision, dpi=dpi,
+                ))
+            except Exception as exc:
+                report.errors.append(f"{rel_source} Seite {page_no}: {exc}")
+                report.pages_failed += 1
+
+        # Gefaechert: nur die Netzaufrufe. Seiten mit Textebene reicht
+        # finish_page unveraendert durch, sie kosten hier nichts.
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            futures = [(p, pool.submit(finish_page, p, model, call))
+                       for p in prepared]
+            for item, future in futures:
+                page_no = item.page_no
+                try:
+                    markdown, via_vision = future.result()
+                except illico_llm.LLMAuthError:
+                    raise
+                except Exception as exc:
+                    report.errors.append(f"{rel_source} Seite {page_no}: {exc}")
+                    report.pages_failed += 1
+                    continue
+
+                language = detect_language(None, markdown)
+                frontmatter = build_page_frontmatter(
+                    title=title, rel_source=rel_source, page_no=page_no,
+                    label=label, language=language,
+                )
+                name = page_filename(slug, page_no, pages_total)
+                (out_dir / name).write_text(frontmatter + markdown, encoding="utf-8")
+
+                done.add(page_no)
+                if via_vision:
+                    report.pages_vision += 1
+                else:
+                    report.pages_text += 1
+                if budget is not None:
+                    budget -= 1
+
+        report.documents += 1
+        manifest[rel_source] = {
+            "hash": digest, "label": label,
+            "pages_total": pages_total, "pages_done": sorted(done),
+        }
+        save_manifest(manifest_path, manifest)
+
+    return report
