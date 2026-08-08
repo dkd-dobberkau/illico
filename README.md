@@ -96,6 +96,35 @@ Die Seiten werden domain-präfixiert unter `raw/<domain>/…` abgelegt und
 anschließend wie gewohnt mit `illico-compile` zum Wiki kompiliert. Optionen
 analog zu `ingest`: `--data`, `--delay`, `--fresh`, `--lang`, `--max-pages`.
 
+### Dokumente (PDFs statt URLs)
+
+PDFs von der Platte werden seitenweise zu Markdown und landen wie gecrawlte
+Seiten unter `raw/`:
+
+```bash
+illico-ingest documents ./ordner --label handbuecher
+```
+
+Seiten mit eingebetteter Textebene werden direkt übernommen und kosten nichts.
+Nur Scans gehen an ein Vision-Modell (Default `anthropic/claude-sonnet-5` —
+bewusst nicht das günstigere Projektmodell, weil Haiku niedrigere
+Bildauflösungen verarbeitet und Scans dann schlechter liest).
+
+Das `--label` wird zur `domain:` der erzeugten Seiten, sie liegen also unter
+`raw/handbuecher/…` und lassen sich mit `--only-domains handbuecher`
+gezielt kompilieren.
+
+Weitere Optionen: `--jobs`, `--fresh`, `--max-pages`, `--text-threshold`
+(ab wie vielen Zeichen eine Seite als Textseite gilt, Default 200) und
+`--force-vision` (Weiche abschalten, falls der Bestand durchgehend gescannt
+ist).
+
+Ein erneuter Lauf über unveränderte Dateien kostet nichts: Illico merkt sich
+in `_documents.json`, welche PDFs es unter dem jeweiligen `--label` schon
+extrahiert hat. Ändert sich eine Datei, wird sie automatisch neu gelesen;
+`--fresh` verwirft dabei nur die Einträge des aktuellen Labels, nicht die
+ganze Datei.
+
 ### Mehrsprachige Wikis
 
 `--lang` filtert die Rohseiten nach Sprache (Frontmatter `language:`, Fallback
@@ -174,6 +203,7 @@ illico-data/
   _inventory.json       ← Themencluster mit stabilen Slugs und Fingerprints
   _crawl-history.json   ← was der Crawler schon gesehen hat
   _crawl-status.json    ← Status des letzten Crawl-Laufs
+  _documents.json       ← welche PDFs schon extrahiert wurden
 ```
 
 Mit `--lang`/`--wiki-dir` tragen `wiki/`, `distill/`, `graph/` und

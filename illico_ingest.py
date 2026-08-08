@@ -30,6 +30,7 @@ from rich import print as rprint
 from langdetect import detect as _langdetect, DetectorFactory, LangDetectException
 
 from illico_crawl_status import classify_block, load_crawl_status, save_crawl_status
+import illico_llm
 
 # Deterministische Spracherkennung (langdetect ist standardmaessig nicht-deterministisch)
 DetectorFactory.seed = 0
@@ -850,6 +851,73 @@ def migrate_lang_cmd(
     table.add_row("[yellow]? Sprache nicht erkannt[/yellow]", str(counts["unknown_lang"]))
     table.add_row("[red]✗ Ohne Frontmatter[/red]", str(counts["no_frontmatter"]))
     console.print(table)
+
+
+@app.command()
+def documents(
+    target: Path = typer.Argument(..., help="Verzeichnis oder einzelne PDF-Datei"),
+    label: str = typer.Option(..., "--label", help="Herkunftsname; wird zur `domain:` und zum Ablagepfad"),
+    data: Path = typer.Option(Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d", help="Illico-Datenverzeichnis"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Modell fuer die Vision-Extraktion (default: anthropic/claude-sonnet-5)"),
+    jobs: int = typer.Option(4, "--jobs", "-j", help="Parallele LLM-Aufrufe"),
+    fresh: bool = typer.Option(False, "--fresh", help="Extraktions-Cache ignorieren"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Harte Obergrenze neu extrahierter Seiten ueber den ganzen Lauf"),
+    text_threshold: int = typer.Option(200, "--text-threshold", help="Ab wie vielen Zeichen eine Seite als Textseite gilt"),
+    force_vision: bool = typer.Option(False, "--force-vision", help="Weiche abschalten, jede Seite ueber Vision"),
+):
+    """
+    Extrahiert PDFs zu Markdown-Seiten unter raw/<label>/.
+
+    Seiten mit Textebene werden direkt uebernommen, Scans ueber ein
+    Vision-Modell gelesen.
+    """
+    import illico_documents
+
+    console.print()
+    console.rule("[bold blue]ILLICO DOCUMENTS[/bold blue]")
+
+    if not target.exists():
+        console.print(f"[red]✗ {target} existiert nicht.[/red]")
+        raise typer.Exit(1)
+
+    root, pdfs, skipped = illico_documents.find_pdfs(target)
+    if not pdfs:
+        console.print(f"[red]✗ Keine PDF-Dateien unter {target} gefunden.[/red]")
+        raise typer.Exit(1)
+
+    effective_model = model or illico_documents.DEFAULT_MODEL
+    console.print(f"  Quelle:  [cyan]{target}[/cyan]")
+    console.print(f"  Label:   [cyan]{label}[/cyan]")
+    console.print(f"  Modell:  [cyan]{effective_model}[/cyan]")
+    console.print(f"  Dateien: [cyan]{len(pdfs)} PDF[/cyan]")
+    if skipped:
+        console.print(f"  [dim]{skipped} Nicht-PDF-Dateien uebersprungen[/dim]")
+    console.print()
+
+    try:
+        report = illico_documents.ingest_documents(
+            target=target, data=data, label=label, model=effective_model,
+            jobs=jobs, fresh=fresh, max_pages=max_pages,
+            threshold=text_threshold, force_vision=force_vision,
+        )
+    except illico_llm.LLMAuthError as exc:
+        console.print(f"[red]✗ LLM authentication failed: {exc}[/red]")
+        console.print("  Check your provider API key.")
+        raise typer.Exit(1)
+
+    console.print()
+    console.rule("[bold green]Fertig[/bold green]")
+    console.print(f"  Dokumente:   [cyan]{report.documents}[/cyan]"
+                  f" ({report.documents_skipped} unveraendert uebersprungen)")
+    console.print(f"  Aus Textebene: [green]{report.pages_text}[/green] Seiten")
+    console.print(f"  Ueber Vision:  [yellow]{report.pages_vision}[/yellow] Seiten")
+    if report.pages_failed:
+        console.print(f"  [yellow]⚠ {report.pages_failed} Seiten ohne Ergebnis[/yellow]"
+                      " — der naechste Lauf versucht sie erneut.")
+    for message in report.errors[:10]:
+        console.print(f"  [red]✗[/red] {message}")
+    console.print()
+    console.print("  Naechster Schritt: [cyan]illico-compile[/cyan]")
 
 
 if __name__ == "__main__":
