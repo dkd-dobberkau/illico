@@ -7,8 +7,11 @@ Vision-Modell geschickt.
 from __future__ import annotations
 
 import hashlib
+import io
 from datetime import datetime
 from pathlib import Path
+
+import pypdfium2 as pdfium
 
 from illico_inventory import slugify
 
@@ -66,3 +69,41 @@ crawled: "{date}"
 {lang_line}---
 
 """
+
+
+def open_document(path: Path, password: str | None = None) -> pdfium.PdfDocument:
+    """Oeffnet ein PDF. Wirft pdfium.PdfiumError bei defekten oder
+    passwortgeschuetzten Dateien — der Treiber faengt das pro Dokument ab."""
+    return pdfium.PdfDocument(path, password=password)
+
+
+def extract_text(page) -> str:
+    """Eingebetteter Text einer Seite. Leer bei Scans."""
+    textpage = page.get_textpage()
+    try:
+        return textpage.get_text_bounded()
+    finally:
+        textpage.close()
+
+
+def render_page_png(page, dpi: int = DEFAULT_DPI) -> bytes:
+    """Rendert eine Seite zu PNG-Bytes.
+
+    200 dpi ergeben bei A4 1654x2338 px und bleiben damit unter der Grenze von
+    2576 px an der langen Kante, ab der das Modell herunterskalieren wuerde.
+    PNG statt JPEG: die Token-Kosten haengen an den Abmessungen, nicht an der
+    Dateigroesse, und Artefakte auf Text bringen nichts.
+    """
+    bitmap = page.render(scale=dpi / 72)
+    buffer = io.BytesIO()
+    bitmap.to_pil().save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def document_title(pdf: pdfium.PdfDocument, fallback: str) -> str:
+    """Titel aus den PDF-Metadaten, sonst der uebergebene Fallback."""
+    try:
+        title = (pdf.get_metadata_dict() or {}).get("Title", "")
+    except Exception:
+        title = ""
+    return title.strip() or fallback
