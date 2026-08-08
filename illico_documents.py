@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -189,3 +190,41 @@ def finish_page(prepared: PreparedPage, model: str, call=None) -> tuple[str, boo
     if not markdown or not markdown.strip():
         raise PageExtractionError("Modell lieferte eine leere Antwort")
     return markdown.strip() + "\n", True
+
+
+MANIFEST_NAME = "_documents.json"
+
+
+def file_hash(path: Path) -> str:
+    """SHA-256 ueber die Datei-Bytes, in 1-MiB-Bloecken."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def load_manifest(path: Path) -> dict:
+    """Laedt das Manifest. Fehlend oder kaputt heisst leer — ein beschaedigtes
+    Manifest kostet einen teuren Neulauf, darf ihn aber nicht verhindern."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_manifest(path: Path, manifest: dict) -> None:
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+
+
+def pending_pages(entry: dict | None, pages_total: int) -> list[int]:
+    """Noch fehlende Seiten, 1-basiert.
+
+    Weicht die gespeicherte Seitenzahl ab, ist der Eintrag unbrauchbar und
+    alles wird neu geholt.
+    """
+    if not entry or entry.get("pages_total") != pages_total:
+        return list(range(1, pages_total + 1))
+    done = set(entry.get("pages_done", []))
+    return [n for n in range(1, pages_total + 1) if n not in done]
