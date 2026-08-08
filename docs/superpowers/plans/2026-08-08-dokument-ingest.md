@@ -423,11 +423,19 @@ bleibt, ab der das Modell herunterskalieren wuerde."
 **Interfaces:**
 - Consumes: `is_text_sufficient`, `extract_text`, `render_page_png`, `VISION_MAX_TOKENS`, `DEFAULT_DPI`
 - Produces:
+  - `@dataclass PreparedPage` mit `page_no: int`, `markdown: str | None`, `png: bytes | None`
+  - `prepare_page(page, page_no: int, threshold: int, force_vision: bool, dpi: int) -> PreparedPage`
+  - `finish_page(prepared: PreparedPage, model: str, call) -> tuple[str, bool]` — Rückgabe `(markdown, ging_ueber_vision)`
   - `vision_markdown(png: bytes, model: str, call) -> str`
-  - `page_to_markdown(page, model: str, threshold: int, force_vision: bool, dpi: int, call) -> tuple[str, bool]` — Rückgabe `(markdown, ging_ueber_vision)`
+  - `PageExtractionError`
   - `VISION_PROMPT: str`
 
 `call` ist immer `illico_llm.call_sync` und wird nur in Tests ersetzt. Signatur: `call(model, messages, system=None, max_tokens=…, retries=…) -> str`.
+
+**Warum zwei Funktionen statt einer:** `prepare_page` fasst nur PDF an und
+bleibt im Hauptthread (PDFium ist nicht ohne Weiteres threadsicher);
+`finish_page` macht nur den Netzaufruf und läuft im Pool. Der Treiber in Task 5
+setzt beide zusammen, statt die Weiche ein zweites Mal nachzubauen.
 
 - [ ] **Step 1: Den fehlschlagenden Test schreiben**
 
@@ -457,10 +465,7 @@ class FakeLLM:
 
 
 class FakePage:
-    """Ersetzt eine pdfium-Seite. render() wird nur gebraucht, wenn Vision laeuft."""
-
-    def __init__(self):
-        self.rendered = False
+    """Ersetzt eine pdfium-Seite. Wird nur durchgereicht, nie benutzt."""
 
 
 def _patch(monkeypatch, text: str):
@@ -468,63 +473,70 @@ def _patch(monkeypatch, text: str):
     monkeypatch.setattr(docs, "render_page_png", lambda page, dpi: b"\x89PNG-fake")
 
 
-def test_textseite_kostet_keinen_llm_aufruf(monkeypatch):
-    _patch(monkeypatch, "x" * 500)
-    llm = FakeLLM()
+def _run(monkeypatch, text, llm, threshold=200, force_vision=False):
+    """Beide Haelften nacheinander — so setzt der Treiber sie auch zusammen."""
+    _patch(monkeypatch, text)
+    prepared = docs.prepare_page(FakePage(), page_no=1, threshold=threshold,
+                                 force_vision=force_vision, dpi=200)
+    return prepared, docs.finish_page(prepared, model="m", call=llm)
 
-    markdown, via_vision = docs.page_to_markdown(
-        FakePage(), model="m", threshold=200, force_vision=False,
-        dpi=200, call=llm,
-    )
+
+def test_textseite_kostet_keinen_llm_aufruf(monkeypatch):
+    llm = FakeLLM()
+    prepared, (markdown, via_vision) = _run(monkeypatch, "x" * 500, llm)
 
     assert llm.calls == 0
     assert via_vision is False
     assert markdown.strip() == "x" * 500
+    assert prepared.png is None, "eine Textseite darf gar nicht erst gerendert werden"
 
 
 def test_scanseite_geht_genau_einmal_ans_modell(monkeypatch):
-    _patch(monkeypatch, "")
     llm = FakeLLM()
-
-    markdown, via_vision = docs.page_to_markdown(
-        FakePage(), model="m", threshold=200, force_vision=False,
-        dpi=200, call=llm,
-    )
+    prepared, (markdown, via_vision) = _run(monkeypatch, "", llm)
 
     assert llm.calls == 1
     assert via_vision is True
     assert "Aus dem Bild" in markdown
+    assert prepared.markdown is None
 
 
 def test_force_vision_schickt_auch_textseiten_ans_modell(monkeypatch):
-    _patch(monkeypatch, "x" * 500)
     llm = FakeLLM()
-
-    _, via_vision = docs.page_to_markdown(
-        FakePage(), model="m", threshold=200, force_vision=True,
-        dpi=200, call=llm,
-    )
+    _, (_, via_vision) = _run(monkeypatch, "x" * 500, llm, force_vision=True)
 
     assert llm.calls == 1
     assert via_vision is True
 
 
 def test_schwelle_verschiebt_die_weiche(monkeypatch):
-    _patch(monkeypatch, "x" * 300)
     llm = FakeLLM()
-
-    docs.page_to_markdown(FakePage(), model="m", threshold=500,
-                          force_vision=False, dpi=200, call=llm)
+    _run(monkeypatch, "x" * 300, llm, threshold=500)
 
     assert llm.calls == 1, "300 Zeichen unter Schwelle 500 muessen ueber Vision gehen"
 
 
-def test_bild_wird_als_data_uri_geschickt(monkeypatch):
+def test_prepare_page_macht_keinen_netzaufruf(monkeypatch):
+    """Die Trennung ist der Zweck: prepare_page laeuft im Hauptthread."""
     _patch(monkeypatch, "")
     llm = FakeLLM()
 
-    docs.page_to_markdown(FakePage(), model="m", threshold=200,
-                          force_vision=False, dpi=200, call=llm)
+    docs.prepare_page(FakePage(), page_no=1, threshold=200,
+                      force_vision=False, dpi=200)
+
+    assert llm.calls == 0
+
+
+def test_seitennummer_ueberlebt_die_vorbereitung(monkeypatch):
+    _patch(monkeypatch, "")
+    prepared = docs.prepare_page(FakePage(), page_no=47, threshold=200,
+                                 force_vision=False, dpi=200)
+    assert prepared.page_no == 47
+
+
+def test_bild_wird_als_data_uri_geschickt(monkeypatch):
+    llm = FakeLLM()
+    _run(monkeypatch, "", llm)
 
     content = llm.last_messages[0]["content"]
     image_block = next(b for b in content if b["type"] == "image_url")
@@ -532,12 +544,10 @@ def test_bild_wird_als_data_uri_geschickt(monkeypatch):
 
 
 def test_leere_modellantwort_gilt_als_fehlschlag(monkeypatch):
-    _patch(monkeypatch, "")
     llm = FakeLLM(answer="   \n  ")
 
     with pytest.raises(docs.PageExtractionError):
-        docs.page_to_markdown(FakePage(), model="m", threshold=200,
-                              force_vision=False, dpi=200, call=llm)
+        _run(monkeypatch, "", llm)
 ```
 
 Am Dateianfang zusätzlich `import pytest` ergänzen.
@@ -585,34 +595,57 @@ def vision_markdown(png: bytes, model: str, call) -> str:
     return call(model, messages, max_tokens=VISION_MAX_TOKENS)
 
 
-def page_to_markdown(
+@dataclass
+class PreparedPage:
+    """Eine Seite nach dem PDF-Teil der Arbeit.
+
+    Genau eines von `markdown` und `png` ist gesetzt: entweder die Textebene
+    hat gereicht, oder die Seite muss noch ans Modell.
+    """
+    page_no: int
+    markdown: str | None = None
+    png: bytes | None = None
+
+
+def prepare_page(
     page,
-    model: str,
+    page_no: int,
     threshold: int = DEFAULT_TEXT_THRESHOLD,
     force_vision: bool = False,
     dpi: int = DEFAULT_DPI,
-    call=None,
-) -> tuple[str, bool]:
-    """Eine Seite zu Markdown. Liefert (markdown, ging_ueber_vision).
+) -> PreparedPage:
+    """Der PDF-Teil: Textebene lesen oder rendern. Kein Netzaufruf.
 
-    Wirft PageExtractionError, wenn das Modell nichts Brauchbares liefert —
-    die Seite darf dann nicht als erledigt im Cache landen.
+    Laeuft im Hauptthread, weil PDFium nicht ohne Weiteres threadsicher ist.
     """
+    if not force_vision:
+        text = extract_text(page)
+        if is_text_sufficient(text, threshold):
+            return PreparedPage(page_no=page_no, markdown=text.strip() + "\n")
+    return PreparedPage(page_no=page_no, png=render_page_png(page, dpi=dpi))
+
+
+def finish_page(prepared: PreparedPage, model: str, call=None) -> tuple[str, bool]:
+    """Der Netz-Teil: fertiges Markdown durchreichen oder Vision aufrufen.
+
+    Liefert (markdown, ging_ueber_vision). Laeuft im Pool. Wirft
+    PageExtractionError, wenn das Modell nichts Brauchbares liefert — die Seite
+    darf dann nicht als erledigt im Cache landen.
+    """
+    if prepared.markdown is not None:
+        return prepared.markdown, False
+
     if call is None:
         import illico_llm
         call = illico_llm.call_sync
 
-    if not force_vision:
-        text = extract_text(page)
-        if is_text_sufficient(text, threshold):
-            return text.strip() + "\n", False
-
-    png = render_page_png(page, dpi=dpi)
-    markdown = vision_markdown(png, model, call)
+    markdown = vision_markdown(prepared.png, model, call)
     if not markdown or not markdown.strip():
         raise PageExtractionError("Modell lieferte eine leere Antwort")
     return markdown.strip() + "\n", True
 ```
+
+`from dataclasses import dataclass` am Modulanfang ergänzen.
 
 - [ ] **Step 4: Test laufen lassen, Erfolg bestätigen**
 
@@ -620,13 +653,18 @@ def page_to_markdown(
 source .venv-pub/bin/activate && pytest tests/test_documents_routing.py -q
 ```
 
-Erwartet: `6 passed`.
+Erwartet: `8 passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add illico_documents.py tests/test_documents_routing.py
 git commit -m "feat(documents): Weiche zwischen Textebene und Vision
+
+In zwei Haelften geschnitten: prepare_page fasst nur das PDF an und bleibt im
+Hauptthread (PDFium ist nicht threadsicher), finish_page macht nur den
+Netzaufruf und laeuft spaeter im Pool. So braucht der Treiber die Weiche nicht
+nachzubauen.
 
 Eine leere Modellantwort wirft PageExtractionError statt durchzurutschen —
 sonst landete die Seite als erledigt im Cache und wuerde nie nachgeholt."
@@ -1040,36 +1078,28 @@ def ingest_documents(
         title = document_title(pdf, fallback=pdf_path.stem)
         done = set((entry or {}).get("pages_done", []))
 
-        # Sequenziell: Text lesen bzw. rendern. Nur was Vision braucht,
-        # wandert in den Pool.
-        prepared: list[tuple[int, str | None, bytes | None]] = []
+        # Sequenziell im Hauptthread: PDF anfassen. PDFium ist nicht ohne
+        # Weiteres threadsicher, und der Teil ist CPU-gebunden und schnell.
+        prepared: list[PreparedPage] = []
         for page_no in todo:
-            page = pdf[page_no - 1]
-            if not force_vision:
-                text = extract_text(page)
-                if is_text_sufficient(text, threshold):
-                    prepared.append((page_no, text.strip() + "\n", None))
-                    continue
             try:
-                prepared.append((page_no, None, render_page_png(page, dpi=dpi)))
+                prepared.append(prepare_page(
+                    pdf[page_no - 1], page_no=page_no, threshold=threshold,
+                    force_vision=force_vision, dpi=dpi,
+                ))
             except Exception as exc:
                 report.errors.append(f"{rel_source} Seite {page_no}: {exc}")
                 report.pages_failed += 1
 
-        def resolve(item):
-            page_no, ready, png = item
-            if ready is not None:
-                return page_no, ready, False
-            markdown = vision_markdown(png, model, call)
-            if not markdown or not markdown.strip():
-                raise PageExtractionError("leere Antwort")
-            return page_no, markdown.strip() + "\n", True
-
+        # Gefaechert: nur die Netzaufrufe. Seiten mit Textebene reicht
+        # finish_page unveraendert durch, sie kosten hier nichts.
         with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-            for item, future in [(i, pool.submit(resolve, i)) for i in prepared]:
-                page_no = item[0]
+            futures = [(p, pool.submit(finish_page, p, model, call))
+                       for p in prepared]
+            for item, future in futures:
+                page_no = item.page_no
                 try:
-                    page_no, markdown, via_vision = future.result()
+                    markdown, via_vision = future.result()
                 except illico_llm.LLMAuthError:
                     raise
                 except Exception as exc:
@@ -1425,11 +1455,10 @@ für eine eigene Runde — nicht still umbauen.
 `(root, pdfs, skipped)`. `IngestReport`-Feldnamen sind zwischen Task 5 und 6
 identisch.
 
-**Bekannte Redundanz:** Task 5 baut die Weiche im Treiber ein zweites Mal
-nach, statt `page_to_markdown` aufzurufen — weil Rendering und LLM-Aufruf dort
-in verschiedene Threads müssen. `page_to_markdown` bleibt trotzdem die
-getestete Referenz der Weichenlogik und wird vom Einzelseiten-Pfad benutzt.
-Wenn beim Umsetzen auffällt, dass sich das ohne Threadproblem
-zusammenziehen lässt, ist das eine begrüßenswerte Vereinfachung — dann
-`page_to_markdown` in zwei Teile schneiden (`prepare_page` / `finish_page`)
-und beide Stellen darauf ziehen.
+**Keine Duplikation der Weichenlogik.** Ein früherer Entwurf ließ den Treiber
+die Weiche nachbauen, weil Rendering im Hauptthread bleiben muss und der
+LLM-Aufruf in den Pool gehört. Stattdessen ist die Weiche entlang genau dieser
+Grenze geschnitten: `prepare_page` fasst nur das PDF an, `finish_page` nur das
+Netz. Beide Stellen — Task 3s Tests und Task 5s Treiber — benutzen dieselben
+zwei Funktionen. Wer den Treiber implementiert, darf die Weiche an keiner
+Stelle erneut ausschreiben.
