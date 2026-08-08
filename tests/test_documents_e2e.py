@@ -65,13 +65,21 @@ def test_erzeugte_seiten_lassen_sich_kompilieren(tmp_path, monkeypatch):
     docs.ingest_documents(target=src, data=data, label="handbuecher",
                           model="m", jobs=1, call=FakeLLM())
 
-    monkeypatch.setattr(illico_compile, "call_llm", ScriptedLLM())
+    llm = ScriptedLLM()
+    monkeypatch.setattr(illico_compile, "call_llm", llm)
     monkeypatch.setattr(illico_compile, "canonicalize_graph", lambda g, m, p: g)
     result = runner.invoke(illico_compile.app,
                            ["--data", str(data), "--jobs", "1"])
 
     assert result.exit_code == 0, result.output
-    assert (data / "wiki" / "_index.md").exists()
+    # Nicht nur "nichts abgestuerzt": die Seiten muessen wirklich durch die
+    # Destillation gelaufen und in einem Artikel gelandet sein. _index.md
+    # allein beweist nichts — der Compile schreibt es beim ersten Lauf immer.
+    assert llm.calls > 0, "der Compile hat gar kein Modell angefasst"
+    assert list((data / "distill" / "v1").glob("*.json")), "kein Destillat entstanden"
+    articles = [p for p in (data / "wiki").glob("*.md")
+                if p.name not in ("_index.md", "_lint-report.md")]
+    assert articles, "kein Artikel aus den Dokumentseiten entstanden"
 
 
 def test_only_domains_trifft_genau_das_label(tmp_path, monkeypatch):
