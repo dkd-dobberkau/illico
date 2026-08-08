@@ -1,7 +1,7 @@
 # Illico
 
-> **English:** [README.en.md](README.en.md) (work in progress). Diese deutsche
-> Fassung ist die maßgebliche Version.
+> **English:** [README.en.md](README.en.md). Diese deutsche Fassung ist die
+> maßgebliche Version.
 
 Illico verwandelt Websites in eine abfragbare Wissensbasis, die von einem LLM
 beantwortet wird — **kein RAG, keine Vektor-Datenbank**. Illico crawlt eine
@@ -39,7 +39,7 @@ URL → ingest → raw/*.md → compile → wiki/*.md → chat
 ```bash
 pip install .
 # oder direkt von GitHub:
-pip install git+https://github.com/dkd-dobberkau/illico@v0.2.0
+pip install git+https://github.com/dkd-dobberkau/illico@v0.3.4
 ```
 
 Mit Test-Extra (für die Test-Suite / Downstream-Fixtures):
@@ -64,10 +64,12 @@ illico-ingest ingest https://example.com --depth 2
 
 # 2. Wiki aus den gecrawlten Seiten kompilieren
 illico-compile
-illico-compile --model claude-sonnet-4-6   # höhere Qualität
-illico-compile --jobs 8                     # mehr parallele LLM-Calls (Default 4)
-illico-compile --lint                       # nur Qualitätsprüfung
-illico-compile --graph-only                 # nur den Graph aus den Destillaten neu bauen
+illico-compile --model claude-sonnet-4-6    # höhere Qualität
+illico-compile --jobs 8                      # mehr parallele LLM-Calls (Default 4)
+illico-compile --lint                        # nur Qualitätsprüfung
+illico-compile --graph-only                  # nur den Graph aus den Destillaten neu bauen
+illico-compile --canonicalize-only           # nur Entity-Resolution über den bestehenden Graph
+illico-compile --only-domains example.com    # nur Seiten dieser Domains kompilieren
 
 # 3. Im Terminal über das Wiki chatten
 illico-chat
@@ -93,6 +95,28 @@ illico-ingest collection lesezeichen.html --lang de   # nur deutschsprachige Sei
 Die Seiten werden domain-präfixiert unter `raw/<domain>/…` abgelegt und
 anschließend wie gewohnt mit `illico-compile` zum Wiki kompiliert. Optionen
 analog zu `ingest`: `--data`, `--delay`, `--fresh`, `--lang`, `--max-pages`.
+
+### Mehrsprachige Wikis
+
+`--lang` filtert die Rohseiten nach Sprache (Frontmatter `language:`, Fallback
+`langdetect`) und schaltet zugleich die Compile-Prompts um: bei genau einer
+Sprache läuft der deutsche bzw. englische Prompt-Satz, sonst Deutsch als
+Fallback. Wiki, Graph und Destillat-Store bekommen dabei ein Sprachsuffix:
+
+```bash
+illico-compile --lang de   # → wiki-de/, graph-de/, distill-de/, _inventory-de.json
+illico-compile --lang en   # → wiki-en/, graph-en/, distill-en/, _inventory-en.json
+```
+
+Beide Sprachen lassen sich so **nebeneinander** pflegen: jede bekommt einen
+eigenen Satz Verzeichnisse, ein Lauf fasst den der anderen nicht an. Mit
+`--wiki-dir` lässt sich das Wiki-Verzeichnis frei benennen; Graph, Destillate
+und Inventar folgen dem Namen (`--wiki-dir wiki-intern` → `graph-intern/`,
+`distill-intern/`, `_inventory-intern.json`).
+
+Rohseiten aus älteren Läufen haben das Feld `language:` noch nicht im
+Frontmatter. `illico-ingest migrate-lang` trägt es nach — idempotent, und
+`--dry-run` zeigt vorher an, was passieren würde.
 
 ### Vollneubau erzwingen
 
@@ -141,11 +165,20 @@ langlaufenden Web-Server. Das Wiki liegt als lesbares Markdown unter
 
 ```
 illico-data/
-  raw/                ← gecrawlte Seiten als Markdown (mit Frontmatter)
-  wiki/                ← kompiliertes Wiki
-    _index.md          ← Einstiegspunkt
+  raw/                  ← gecrawlte Seiten als Markdown (mit Frontmatter)
+  distill/              ← Destillate, über den Seiteninhalt adressiert (Cache)
+  wiki/                 ← kompiliertes Wiki
+    _index.md           ← Einstiegspunkt
     _lint-report.md     ← Qualitätsreport
+  graph/                ← Wissensgraph: nodes.json, edges.json, meta.json
+  _inventory.json       ← Themencluster mit stabilen Slugs und Fingerprints
+  _crawl-history.json   ← was der Crawler schon gesehen hat
+  _crawl-status.json    ← Status des letzten Crawl-Laufs
 ```
+
+Mit `--lang`/`--wiki-dir` tragen `wiki/`, `distill/`, `graph/` und
+`_inventory.json` denselben Suffix (`wiki-de/`, `distill-de/`, `graph-de/`,
+`_inventory-de.json`) — jede Sprache hat damit einen vollständig eigenen Satz.
 
 ## Design
 
@@ -154,8 +187,10 @@ illico-data/
   Dateien anhand des Namens), nicht Embedding-basiert.
 - **Default-Modell**: `claude-haiku-4-5-20251001` für Kosteneffizienz.
   `claude-sonnet-4-6` für komplexe Sites.
-- Alle Prompts sind auf Deutsch (das Projekt richtet sich primär an
-  deutschsprachige Inhalte).
+- **Prompt-Sprache**: Die Compile-Prompts liegen auf Deutsch und Englisch vor,
+  `--lang de`/`--lang en` schaltet um; ohne Angabe laufen die deutschen. Die
+  Artikel selbst schreibt das LLM immer in der Sprache der Quellen — die
+  Prompt-Sprache steuert nur die Anweisungen, nicht das Ergebnis.
 
 ## Lizenz
 

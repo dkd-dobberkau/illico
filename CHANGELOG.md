@@ -2,6 +2,38 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## v0.3.4 — Sprachläufe teilen sich kein Inventar mehr
+
+`--lang de` und `--lang en` legen Wiki, Graph und Destillat-Store getrennt ab —
+das Inventar aber nicht. Es hieß in beiden Fällen `_inventory.json`, weil der
+Sprachsuffix an drei Stellen unabhängig voneinander berechnet wurde und
+ausgerechnet an dieser einen durchfiel. Der zweite Sprachlauf lud damit die
+Cluster des ersten, fand deren Destillate nicht wieder und räumte sie weg. Der
+nächste Lauf der ersten Sprache schnitt seine Themen daraufhin komplett neu:
+statt null LLM-Aufrufen kostete er Zuordnung, sämtliche Artikel, Index und Lint.
+Genau die Ersparnis, für die v0.3.0 gebaut wurde, war bei mehrsprachigem Betrieb
+also nie wirksam.
+
+Graph, Inventar und Destillat-Store leiten ihren Namen jetzt über eine einzige
+Funktion (`_wiki_suffix`) aus dem Wiki-Verzeichnis ab. Damit entfällt auch die
+Fallunterscheidung zwischen `--lang` und `--wiki-dir` — beide Wege laufen durch
+dieselbe Ableitung, und ein künftiger Pfad kann nicht mehr einzeln ausscheren.
+
+**Migration:** Wer bisher mit `--lang` gearbeitet hat, besitzt ein
+`_inventory.json`, das nun nicht mehr gefunden wird. Der erste Lauf nach dem
+Update schneidet die Themen deshalb einmalig neu — die Artikel unter den alten
+Slugs werden dabei als Waisen entfernt und neu geschrieben, `[[Links]]` und
+Bookmarks in diesem Wiki ändern sich also ein Mal. Wikis ohne `--lang` sind
+nicht betroffen. Die alte `_inventory.json` bleibt liegen und kann danach
+gelöscht werden; Illico benennt sie bewusst nicht automatisch um, weil bei einem
+bereits vermischten Bestand nicht entscheidbar ist, welcher Sprache sie gehört.
+
+Außerdem: beide READMEs auf den Stand von 0.3.x gebracht — Destillat-Schicht und
+inkrementeller Compile, die Optionen `--jobs`, `--graph-only`,
+`--canonicalize-only` und `--only-domains`, ein Abschnitt zur Mehrsprachigkeit,
+der vollständige Datenverzeichnis-Baum und die Prompt-Sprachen. Die englische
+Fassung war noch auf 0.2-Stand und ist jetzt inhaltlich gleichgezogen.
+
 ## v0.3.3 — Erstaufbau clustert wieder thematisch
 
 Der Zuordnungs-Prompt war für den **inkrementellen** Fall geschrieben:

@@ -599,6 +599,17 @@ def read_raw_files(raw_dir: Path) -> dict[str, str]:
     return files
 
 
+def _wiki_suffix(wiki_dir: Path) -> str:
+    """Der Namenszusatz eines Wiki-Verzeichnisses: wiki-de → '-de', wiki → ''.
+
+    Einzige Quelle fuer die Benennung der Nachbarn (graph, distill, _inventory).
+    Ein Verzeichnis, das nicht mit 'wiki' beginnt, bekommt keinen Suffix — seine
+    Nachbarn heissen dann unveraendert graph/distill/_inventory.json.
+    """
+    name = wiki_dir.name
+    return name[len("wiki"):] if name.startswith("wiki") else ""
+
+
 def _distill_root(data: Path, wiki_dir: Path) -> Path:
     """Store-Verzeichnis parallel zum Wiki: wiki-ABC → distill-ABC, wiki → distill.
 
@@ -606,9 +617,7 @@ def _distill_root(data: Path, wiki_dir: Path) -> Path:
     einem Mandanten, ein gemeinsamer Store braechte also keine Ersparnis, wohl
     aber eine neue Leak-Flaeche.
     """
-    name = wiki_dir.name
-    suffix = name[len("wiki"):] if name.startswith("wiki") else ""
-    return data / ("distill" + suffix)
+    return data / ("distill" + _wiki_suffix(wiki_dir))
 
 
 def _filter_raw_by_domains(raw_files: dict[str, str], allowed: set[str] | None) -> dict[str, str]:
@@ -1192,26 +1201,21 @@ def compile(
 
     effective_model = model or illico_llm.ANSWER_MODEL
 
-    # Verzeichnisse — Wiki-/Graph-Ordner abhaengig von --lang/--wiki-dir
+    # Verzeichnisse — Wiki-/Graph-Ordner abhaengig von --lang/--wiki-dir.
+    # Der Wiki-Name wird zuerst festgelegt, Graph, Inventar und Destillat-Store
+    # leiten sich AUS IHM ab (siehe _wiki_suffix / _distill_root). Frueher
+    # errechnete jeder Pfad seinen Suffix selbst — der des Inventars fiel dabei
+    # durch, sodass sich `--lang de` und `--lang en` ein `_inventory.json`
+    # teilten und sich gegenseitig die Cluster wegprunten.
     raw_dir = data / "raw"
     single_lang_suffix = (
         f"-{lang.strip().lower()}" if (lang and "," not in lang) else ""
     )
 
-    if wiki_dir_name:
-        wiki_dir = data / wiki_dir_name
-        # Graph-/Inventory-Namen parallel zum Wiki ableiten:
-        # wiki-de → graph-de/_inventory-de.json, wiki → graph/_inventory.json
-        if wiki_dir_name.startswith("wiki"):
-            graph_dir = data / ("graph" + wiki_dir_name[len("wiki"):])
-            inv_path_name = "_inventory" + wiki_dir_name[len("wiki"):] + ".json"
-        else:
-            graph_dir = data / "graph"
-            inv_path_name = "_inventory.json"
-    else:
-        wiki_dir = data / f"wiki{single_lang_suffix}"
-        graph_dir = data / f"graph{single_lang_suffix}"
-        inv_path_name = "_inventory.json"
+    wiki_dir = data / (wiki_dir_name or f"wiki{single_lang_suffix}")
+    suffix = _wiki_suffix(wiki_dir)
+    graph_dir = data / f"graph{suffix}"
+    inv_path_name = f"_inventory{suffix}.json"
 
     if not raw_dir.exists() or not any(raw_dir.rglob("*.md")):
         console.print(f"[red]✗ Keine Dateien in {raw_dir} gefunden.[/red]")
