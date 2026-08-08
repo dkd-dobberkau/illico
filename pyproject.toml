@@ -22,6 +22,8 @@ dependencies = [
   "rich>=13.9,<15.0",
   "python-dotenv>=1.0,<2.0",
   "langdetect>=1.0.9,<2.0",
+  "pypdfium2>=5.12,<6.0",
+  "pillow>=11.0,<13.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +42,7 @@ only-include = [
   "illico_graph.py", "illico_llm.py", "illico_canonicalize.py", "illico_crawl_status.py",
   "illico_frontmatter.py", "illico_context.py", "illico_app.py", "illico_single.py",
   "illico_testing.py", "illico_distill.py", "illico_inventory.py",
+  "illico_documents.py",
 ]
 sources = ["."]
 force-include = { "illico_index.html" = "illico_index.html" }
