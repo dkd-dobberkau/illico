@@ -178,18 +178,35 @@ language: "de"
 `illico-data/_documents.json`, neben `_crawl-history.json`:
 
 ```json
-{"sha256:abc…": {"source": "handbuecher/betriebshandbuch.pdf",
-                 "label": "handbuecher",
-                 "pages_total": 312,
-                 "pages_done": [1, 2, 3]}}
+{"handbuecher/betriebshandbuch.pdf": {"hash": "sha256:abc…",
+                                      "label": "handbuecher",
+                                      "pages_total": 312,
+                                      "pages_done": [1, 2, 3]}}
 ```
 
-Adressiert über die **PDF-Bytes**, nicht über das erzeugte Markdown. Das ist
-der Kern: ein Vision-LLM produziert bei jedem Lauf leicht anderes Markdown, und
-`content_hash` (`illico_distill.py:22`) hasht Frontmatter plus Rumpf. Ohne
-diesen Cache würde jeder erneute Lauf alle Destillate invalidieren. Mit ihm
-wird `raw/` pro Dokumentversion genau einmal geschrieben, und die Kette
-dahinter merkt nichts.
+**Schlüssel ist der Quellpfad relativ zur Wurzel, der Hash steht im Eintrag.**
+Der Hash ist der Änderungsdetektor: stimmt er, wird das Dokument übersprungen;
+weicht er ab, werden alle seine Seiten neu geholt.
+
+Erkannt wird also weiterhin an den **PDF-Bytes**, nicht am erzeugten Markdown —
+das ist der Kern und bleibt unberührt: ein Vision-LLM produziert bei jedem Lauf
+leicht anderes Markdown, und `content_hash` (`illico_distill.py:22`) hasht
+Frontmatter plus Rumpf. Ohne diesen Cache würde jeder erneute Lauf alle
+Destillate invalidieren. Mit ihm wird `raw/` pro Dokumentversion genau einmal
+geschrieben, und die Kette dahinter merkt nichts.
+
+**Warum nicht der Hash als Schlüssel** (so stand es im ersten Entwurf): die
+Ausgabedateinamen leiten sich aus dem *Pfad* ab. Lägen zwei byte-gleiche PDFs
+an zwei Pfaden, teilten sie sich einen Manifest-Eintrag — und das zweite bekäme
+überhaupt keine `raw/`-Dateien, weil der Eintrag des ersten es als erledigt
+ausweist. Das Dokument verschwände still aus dem Wiki. Ein Dokument ist durch
+seinen Pfad identifiziert, nicht durch seinen Inhalt; der Inhalt sagt nur, ob
+es sich geändert hat.
+
+**Nicht gelöst:** wird ein PDF umbenannt, entsteht ein neuer Eintrag und die
+Seiten werden neu extrahiert; die Dateien unter dem alten Slug bleiben als
+Waisen liegen. Das gilt für jede Schlüsselwahl gleichermaßen und ist eine
+eigene Runde wert, wenn es auftritt.
 
 `pages_done` ist der zweite Zweck: bricht Seite 150 von 312 ab, holt der
 nächste Lauf nur die fehlenden nach — dieselbe Fehlertoleranz, die `distill_all`

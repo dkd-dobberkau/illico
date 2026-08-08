@@ -727,8 +727,8 @@ def test_kaputtes_manifest_ist_leer_statt_toedlich(tmp_path: Path):
 
 def test_manifest_ueberlebt_den_roundtrip(tmp_path: Path):
     path = tmp_path / "_documents.json"
-    manifest = {"sha256:abc": {"source": "a.pdf", "label": "l",
-                               "pages_total": 3, "pages_done": [1, 2]}}
+    manifest = {"a.pdf": {"hash": "sha256:abc", "label": "l",
+                          "pages_total": 3, "pages_done": [1, 2]}}
     docs.save_manifest(path, manifest)
     assert docs.load_manifest(path) == manifest
     assert json.loads(path.read_text(encoding="utf-8")) == manifest
@@ -749,8 +749,8 @@ def test_teilausfall_wird_gezielt_nachgeholt():
 
 
 def test_geaenderte_seitenzahl_erzwingt_vollen_neulauf():
-    """Der Manifest-Schluessel ist der Datei-Hash, also kann sich pages_total
-    eigentlich nicht aendern. Passiert es doch, ist der Eintrag unbrauchbar."""
+    """Weicht die gespeicherte Seitenzahl von der tatsaechlichen ab, ist der
+    Eintrag unbrauchbar und alles wird neu geholt."""
     entry = {"pages_total": 3, "pages_done": [1, 2, 3]}
     assert docs.pending_pages(entry, 5) == [1, 2, 3, 4, 5]
 ```
@@ -853,7 +853,15 @@ from test_documents_routing import FakeLLM
 
 @pytest.fixture
 def bestand(tmp_path: Path) -> Path:
-    """Ordner mit zwei PDFs und einer Nicht-PDF-Datei."""
+    """Ordner mit zwei PDFs und einer Nicht-PDF-Datei.
+
+    Die beiden PDFs sind ABSICHTLICH byte-gleich. Sie liegen an
+    verschiedenen Pfaden und sind damit zwei Dokumente, die je eigene
+    raw/-Dateien bekommen muessen. Ein frueherer Entwurf schluesselte das
+    Manifest ueber den Datei-Hash — damit teilten sich beide einen Eintrag
+    und das zweite verschwand still. Diese Gleichheit nicht "reparieren":
+    sie ist der Regressionstest dafuer.
+    """
     src = tmp_path / "bestand"
     (src / "unterordner").mkdir(parents=True)
     (src / "eins.pdf").write_bytes(MINIMAL_PDF)
@@ -916,6 +924,20 @@ def test_fresh_umgeht_den_cache(tmp_path, bestand):
     assert report.documents_skipped == 0
 
 
+def test_geaenderte_datei_wird_neu_extrahiert(tmp_path, bestand):
+    """Der Hash im Eintrag ist der Aenderungsdetektor."""
+    data = tmp_path / "illico-data"
+    docs.ingest_documents(target=bestand, data=data, label="l",
+                          model="m", jobs=1, call=FakeLLM())
+
+    (bestand / "eins.pdf").write_bytes(MINIMAL_PDF + b"\n% geaendert\n")
+    report = docs.ingest_documents(target=bestand, data=data, label="l",
+                                   model="m", jobs=1, call=FakeLLM())
+
+    assert report.documents == 1, "nur die geaenderte Datei darf neu laufen"
+    assert report.documents_skipped == 1
+
+
 def test_defektes_dokument_stoppt_den_lauf_nicht(tmp_path, bestand):
     (bestand / "kaputt.pdf").write_bytes(b"kein PDF")
     data = tmp_path / "illico-data"
@@ -946,9 +968,23 @@ def test_gescheiterte_seite_wird_gemeldet_und_nachgeholt(tmp_path, bestand, monk
     data = tmp_path / "illico-data"
 
     class FlakyLLM(FakeLLM):
+        """Scheitert genau einmal.
+
+        Das Scheitern haengt an einem eigenen Flag, nicht am Aufrufzaehler:
+        der Test setzt `calls` zwischen den Laeufen zurueck, um die Aufrufe des
+        zweiten Laufs zu messen. Haengte der Fehler am Zaehler, scheiterte
+        genau der gemessene Wiederholungsversuch wieder — die Assertion waere
+        nicht erfuellbar.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.failed_once = False
+
         def __call__(self, model, messages, system=None, max_tokens=2000, retries=3):
             self.calls += 1
-            if self.calls == 1:
+            if not self.failed_once:
+                self.failed_once = True
                 raise RuntimeError("Modell kaputt")
             return "# Seite\n"
 
@@ -1064,7 +1100,12 @@ def ingest_documents(
             report.errors.append(f"{rel_source}: {exc}")
             continue
 
-        entry = manifest.get(digest)
+        # Schluessel ist der Pfad, der Hash ist der Aenderungsdetektor.
+        # Zwei byte-gleiche PDFs an zwei Pfaden sind zwei Dokumente und
+        # brauchen beide ihre eigenen raw/-Dateien.
+        entry = manifest.get(rel_source)
+        if entry is not None and entry.get("hash") != digest:
+            entry = None
         todo = pending_pages(entry, pages_total)
         if not todo:
             report.documents_skipped += 1
@@ -1124,8 +1165,8 @@ def ingest_documents(
                     budget -= 1
 
         report.documents += 1
-        manifest[digest] = {
-            "source": rel_source, "label": label,
+        manifest[rel_source] = {
+            "hash": digest, "label": label,
             "pages_total": pages_total, "pages_done": sorted(done),
         }
         save_manifest(manifest_path, manifest)
