@@ -6,8 +6,10 @@ Vision-Modell geschickt.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -107,3 +109,83 @@ def document_title(pdf: pdfium.PdfDocument, fallback: str) -> str:
     except Exception:
         title = ""
     return title.strip() or fallback
+
+
+class PageExtractionError(Exception):
+    """Eine einzelne Seite konnte nicht extrahiert werden."""
+
+
+VISION_PROMPT = """Gib den Inhalt dieser Dokumentseite als Markdown wieder.
+
+- Nur der Seiteninhalt, keine Einleitung und kein Nachwort.
+- Ueberschriften als Markdown-Ueberschriften, Tabellen als Markdown-Tabellen,
+  Listen als Listen.
+- Abbildungen und Diagramme in einem Satz beschreiben, in eckigen Klammern.
+- Kopf- und Fusszeilen, Seitenzahlen und Wasserzeichen weglassen.
+- Schreibe in der Sprache der Seite.
+- Ist die Seite leer, antworte mit genau: (leere Seite)
+"""
+
+
+def vision_markdown(png: bytes, model: str, call) -> str:
+    """Schickt ein Seitenbild ans Modell und gibt Markdown zurueck."""
+    encoded = base64.b64encode(png).decode("ascii")
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{encoded}"}},
+            {"type": "text", "text": VISION_PROMPT},
+        ],
+    }]
+    return call(model, messages, max_tokens=VISION_MAX_TOKENS)
+
+
+@dataclass
+class PreparedPage:
+    """Eine Seite nach dem PDF-Teil der Arbeit.
+
+    Genau eines von `markdown` und `png` ist gesetzt: entweder die Textebene
+    hat gereicht, oder die Seite muss noch ans Modell.
+    """
+    page_no: int
+    markdown: str | None = None
+    png: bytes | None = None
+
+
+def prepare_page(
+    page,
+    page_no: int,
+    threshold: int = DEFAULT_TEXT_THRESHOLD,
+    force_vision: bool = False,
+    dpi: int = DEFAULT_DPI,
+) -> PreparedPage:
+    """Der PDF-Teil: Textebene lesen oder rendern. Kein Netzaufruf.
+
+    Laeuft im Hauptthread, weil PDFium nicht ohne Weiteres threadsicher ist.
+    """
+    if not force_vision:
+        text = extract_text(page)
+        if is_text_sufficient(text, threshold):
+            return PreparedPage(page_no=page_no, markdown=text.strip() + "\n")
+    return PreparedPage(page_no=page_no, png=render_page_png(page, dpi=dpi))
+
+
+def finish_page(prepared: PreparedPage, model: str, call=None) -> tuple[str, bool]:
+    """Der Netz-Teil: fertiges Markdown durchreichen oder Vision aufrufen.
+
+    Liefert (markdown, ging_ueber_vision). Laeuft im Pool. Wirft
+    PageExtractionError, wenn das Modell nichts Brauchbares liefert — die Seite
+    darf dann nicht als erledigt im Cache landen.
+    """
+    if prepared.markdown is not None:
+        return prepared.markdown, False
+
+    if call is None:
+        import illico_llm
+        call = illico_llm.call_sync
+
+    markdown = vision_markdown(prepared.png, model, call)
+    if not markdown or not markdown.strip():
+        raise PageExtractionError("Modell lieferte eine leere Antwort")
+    return markdown.strip() + "\n", True
