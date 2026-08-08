@@ -41,11 +41,23 @@ Fidelity-Genauigkeit ist damit deutlich weniger wert als bei klassischem RAG.
 
 ## Abhängigkeiten
 
-Genau eine neue: **`pypdfium2`** (Apache-2.0 / BSD-3-Clause) — Bindings an
-PDFium, Googles Engine aus Chromium. Keine Pflicht-Laufzeitabhängigkeiten,
-fertige Wheels für alle Zielplattformen, kein Poppler, kein Ghostscript, kein
-Torch. Kann beides, was gebraucht wird: eingebetteten Text extrahieren und
-Seiten rendern.
+Zwei neue:
+
+**`pypdfium2`** (Apache-2.0 / BSD-3-Clause) — Bindings an PDFium, Googles
+Engine aus Chromium. Selbst ohne jede Laufzeitabhängigkeit, fertige Wheels für
+alle Zielplattformen, kein Poppler, kein Ghostscript, kein Torch. Kann beides,
+was gebraucht wird: eingebetteten Text extrahieren und Seiten rendern.
+
+**`Pillow`** (HPND, permissiv) — nur als PNG-Encoder. pypdfium2 gibt ein
+Bitmap heraus, das sich über `to_pil()` oder `to_numpy()` abholen lässt; für
+die base64-Data-URI brauchen wir kodierte PNG-Bytes. Pillow ist der kleinere
+der beiden Wege (numpy wäre größer und bräuchte trotzdem noch einen Encoder).
+Ein eigener Mini-PNG-Encoder über `zlib` wäre möglich und spart ~3,5 MB, ist
+aber selbstgeschriebener Bildcode für wenig Gegenwert — bewusst nicht gemacht.
+
+Verifiziert gegen pypdfium2 **5.12.1**: `PdfDocument(input, password=None)`,
+`PdfiumError`, `page.get_textpage()`, `textpage.get_text_bounded()` /
+`count_chars()`, `page.render(scale=…)`, `bitmap.to_pil()`.
 
 `illico_llm.py` bleibt **unverändert**. `call_sync` nimmt bereits
 `messages: list[dict]` im vollen litellm-Format, also auch multimodale Inhalte.
