@@ -293,11 +293,19 @@ def ingest_documents(
     out_dir = data / "raw" / label
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = data / MANIFEST_NAME
-    manifest = {} if fresh else load_manifest(manifest_path)
+    manifest = load_manifest(manifest_path)
+    if fresh:
+        # _documents.json ist eine Datei fuer alle Labels. Ein kompletter
+        # Reset wuerde fremde Labels in eine volle Neuextraktion zwingen —
+        # nur die Eintraege dieses Labels verwerfen.
+        prefix = f"{label}/"
+        manifest = {key: value for key, value in manifest.items()
+                    if not key.startswith(prefix)}
     budget = max_pages
 
     for pdf_path in pdfs:
         rel_source = str(pdf_path.relative_to(root))
+        manifest_key = f"{label}/{rel_source}"
         try:
             digest = file_hash(pdf_path)
             pdf = open_document(pdf_path)
@@ -306,10 +314,12 @@ def ingest_documents(
             report.errors.append(f"{rel_source}: {exc}")
             continue
 
-        # Schluessel ist der Pfad, der Hash ist der Aenderungsdetektor.
-        # Zwei byte-gleiche PDFs an zwei Pfaden sind zwei Dokumente und
-        # brauchen beide ihre eigenen raw/-Dateien.
-        entry = manifest.get(rel_source)
+        # Schluessel ist Label+Pfad, der Hash ist der Aenderungsdetektor.
+        # Ohne das Label im Schluessel teilten sich zwei Ingests mit
+        # gleicher relativer Struktur einen Eintrag, und das zweite
+        # Dokument bekaeme keine raw/-Dateien — derselbe stille Verlust wie
+        # beim reinen Hash-Schluessel, eine Ebene hoeher.
+        entry = manifest.get(manifest_key)
         if entry is not None and entry.get("hash") != digest:
             entry = None
         todo = pending_pages(entry, pages_total)
@@ -371,8 +381,8 @@ def ingest_documents(
                     budget -= 1
 
         report.documents += 1
-        manifest[rel_source] = {
-            "hash": digest, "label": label,
+        manifest[manifest_key] = {
+            "hash": digest,
             "pages_total": pages_total, "pages_done": sorted(done),
         }
         save_manifest(manifest_path, manifest)

@@ -145,13 +145,86 @@ def test_zweiter_lauf_ist_gratis(tmp_path, bestand):
 
 
 def test_fresh_umgeht_den_cache(tmp_path, bestand):
+    """documents_skipped == 0 allein beweist wenig — ein leeres Manifest
+    liesse das auch trivial zu. Der Aufrufzaehler zeigt, dass wirklich neu
+    extrahiert wurde, nicht nur dass nichts uebersprungen wurde."""
     data = tmp_path / "illico-data"
     docs.ingest_documents(target=bestand, data=data, label="l",
                           model="m", jobs=1, call=FakeLLM())
+
+    llm = FakeLLM()
     report = docs.ingest_documents(target=bestand, data=data, label="l",
                                    model="m", jobs=1, fresh=True,
-                                   call=FakeLLM())
+                                   call=llm)
+
     assert report.documents_skipped == 0
+    assert report.documents == 2
+    assert llm.calls == 2, "fresh muss wirklich neu extrahieren, nicht nur nichts uebersprungen haben"
+
+
+def test_zwei_labels_mit_gleichem_relativpfad_kollidieren_nicht(tmp_path):
+    """_documents.json ist eine Datei fuer alle Labels. Ohne das Label im
+    Manifest-Schluessel teilten sich zwei Ingests mit gleicher relativer
+    Struktur einen Eintrag, und das zweite Dokument bekam keine raw/-Dateien
+    — stiller Verlust, keine Fehlermeldung."""
+    quelle_a = tmp_path / "quelle-a"
+    quelle_a.mkdir()
+    (quelle_a / "a.pdf").write_bytes(MINIMAL_PDF)
+
+    quelle_b = tmp_path / "quelle-b"
+    quelle_b.mkdir()
+    (quelle_b / "a.pdf").write_bytes(MINIMAL_PDF)
+
+    data = tmp_path / "illico-data"
+
+    report_hb = docs.ingest_documents(target=quelle_a, data=data, label="handbuecher",
+                                      model="m", jobs=1, call=FakeLLM())
+    report_vt = docs.ingest_documents(target=quelle_b, data=data, label="vertraege",
+                                      model="m", jobs=1, call=FakeLLM())
+
+    assert report_hb.documents == 1 and report_hb.documents_skipped == 0
+    assert report_vt.documents == 1 and report_vt.documents_skipped == 0
+    assert len(list((data / "raw" / "handbuecher").glob("*.md"))) == 1
+    assert len(list((data / "raw" / "vertraege").glob("*.md"))) == 1
+
+    # Zweiter Lauf je Label: beide sind jetzt gecacht, keiner verschwindet
+    # in den Eintraegen des jeweils anderen.
+    report_hb2 = docs.ingest_documents(target=quelle_a, data=data, label="handbuecher",
+                                       model="m", jobs=1, call=FakeLLM())
+    report_vt2 = docs.ingest_documents(target=quelle_b, data=data, label="vertraege",
+                                       model="m", jobs=1, call=FakeLLM())
+    assert report_hb2.documents_skipped == 1
+    assert report_vt2.documents_skipped == 1
+
+
+def test_fresh_beruehrt_nur_das_eigene_label(tmp_path):
+    """--fresh auf einem Label darf ein fremdes Label nicht in eine volle
+    Vision-Neuextraktion zwingen. Vorher leerte `manifest = {}` die gesamte
+    _documents.json statt nur die Eintraege des laufenden Labels."""
+    quelle_hb = tmp_path / "hb"
+    quelle_hb.mkdir()
+    (quelle_hb / "hb.pdf").write_bytes(MINIMAL_PDF)
+
+    quelle_vt = tmp_path / "vt"
+    quelle_vt.mkdir()
+    (quelle_vt / "vt.pdf").write_bytes(MINIMAL_PDF)
+
+    data = tmp_path / "illico-data"
+
+    docs.ingest_documents(target=quelle_hb, data=data, label="handbuecher",
+                          model="m", jobs=1, call=FakeLLM())
+    docs.ingest_documents(target=quelle_vt, data=data, label="vertraege",
+                          model="m", jobs=1, call=FakeLLM())
+
+    docs.ingest_documents(target=quelle_vt, data=data, label="vertraege",
+                          model="m", jobs=1, fresh=True, call=FakeLLM())
+
+    llm = FakeLLM()
+    report = docs.ingest_documents(target=quelle_hb, data=data, label="handbuecher",
+                                   model="m", jobs=1, call=llm)
+
+    assert llm.calls == 0, "unberuehrtes Label darf nach fremdem --fresh keine Neuextraktion zahlen"
+    assert report.documents_skipped == 1
 
 
 def test_geaenderte_datei_wird_neu_extrahiert(tmp_path, bestand):
