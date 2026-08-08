@@ -5,6 +5,7 @@ CORE_MODULES = [
     "illico_ingest", "illico_compile", "illico_chat", "illico_chat_core",
     "illico_graph", "illico_llm", "illico_canonicalize", "illico_crawl_status",
     "illico_frontmatter", "illico_context", "illico_app", "illico_single",
+    "illico_documents",
 ]
 FORBIDDEN = {"illico_tenants", "illico_cloud", "illico_app_cloud", "illico_cloud_compile"}
 ROOT = Path(__file__).resolve().parent.parent

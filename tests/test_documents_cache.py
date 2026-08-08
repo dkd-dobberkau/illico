@@ -31,6 +31,36 @@ def test_kaputtes_manifest_ist_leer_statt_toedlich(tmp_path: Path):
     assert docs.load_manifest(path) == {}
 
 
+def test_save_manifest_ist_atomar(tmp_path: Path, monkeypatch):
+    """Finding 2: save_manifest muss ueber temp-Datei + os.replace schreiben,
+    wie illico_inventory.save_inventory, illico_distill.DistillStore.put und
+    illico_crawl_status.save_crawl_status. Ohne den atomaren Swap wuerde ein
+    Absturz mitten im Schreiben die Datei zerreissen; load_manifest schluckt
+    den JSONDecodeError und liefert dann {} — der Fortschritt ALLER Labels
+    waere weg, nicht nur der gerade geschriebene."""
+    path = tmp_path / "_documents.json"
+    docs.save_manifest(path, {"a": 1})
+    original = path.read_text(encoding="utf-8")
+
+    real_write_text = Path.write_text
+
+    def boom(self, *args, **kwargs):
+        if self.name.endswith(".tmp"):
+            real_write_text(self, *args, **kwargs)
+            raise OSError("Absturz mitten im Schreiben")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+
+    with pytest.raises(OSError):
+        docs.save_manifest(path, {"a": 2})
+
+    assert path.read_text(encoding="utf-8") == original, (
+        "ein Absturz beim Schreiben der temp-Datei darf die bestehende "
+        "Manifest-Datei nicht antasten"
+    )
+
+
 def test_manifest_ueberlebt_den_roundtrip(tmp_path: Path):
     path = tmp_path / "_documents.json"
     manifest = {"sha256:abc": {"source": "a.pdf", "label": "l",
@@ -241,6 +271,15 @@ def test_geaenderte_datei_wird_neu_extrahiert(tmp_path, bestand):
     assert report.documents_skipped == 1
 
 
+def test_ingest_documents_weist_ausbrechendes_label_ab(tmp_path, bestand):
+    data = tmp_path / "illico-data"
+    with pytest.raises(ValueError):
+        docs.ingest_documents(target=bestand, data=data, label="../../ausserhalb",
+                              model="m", jobs=1, call=FakeLLM())
+    assert not (tmp_path / "ausserhalb").exists()
+    assert not data.exists() or not (data / "raw").exists()
+
+
 def test_defektes_dokument_stoppt_den_lauf_nicht(tmp_path, bestand):
     (bestand / "kaputt.pdf").write_bytes(b"kein PDF")
     data = tmp_path / "illico-data"
@@ -264,6 +303,35 @@ def test_auth_fehler_bricht_sofort_ab(tmp_path, bestand, monkeypatch):
     with pytest.raises(illico_llm.LLMAuthError):
         docs.ingest_documents(target=bestand, data=tmp_path / "d", label="l",
                               model="m", jobs=1, call=boom)
+
+
+def test_leere_seite_wird_nicht_geschrieben_aber_als_erledigt_vermerkt(tmp_path, bestand, monkeypatch):
+    """Finding 8: antwortet das Vision-Modell mit dem im Prompt verlangten
+    Sentinel fuer eine leere Seite, darf kein raw/-File entstehen und die
+    Seite darf nicht als Text-/Vision-Inhalt gezaehlt werden — sonst distilliert
+    der Compile spaeter eine leere Seite. Sie muss aber in pages_done landen,
+    sonst wird sie bei jedem Lauf erneut (kostenpflichtig) angefragt."""
+    monkeypatch.setattr(docs, "extract_text", lambda page: "")
+    data = tmp_path / "illico-data"
+
+    llm = FakeLLM(answer=f"  {docs.BLANK_PAGE_SENTINEL}  \n")
+    report = docs.ingest_documents(target=bestand, data=data, label="l",
+                                   model="m", jobs=1, call=llm)
+
+    assert list((data / "raw" / "l").glob("*.md")) == []
+    assert report.pages_text == 0 and report.pages_vision == 0
+    assert report.pages_blank == 2
+
+    manifest = docs.load_manifest(data / docs.MANIFEST_NAME)
+    for entry in manifest.values():
+        assert entry["pages_done"] == [1], "leere Seite muss trotzdem als erledigt gelten"
+
+    # Zweiter Lauf darf die leere Seite nicht erneut anfragen.
+    llm.calls = 0
+    report2 = docs.ingest_documents(target=bestand, data=data, label="l",
+                                    model="m", jobs=1, call=llm)
+    assert llm.calls == 0
+    assert report2.documents_skipped == 2
 
 
 def test_gescheiterte_seite_wird_gemeldet_und_nachgeholt(tmp_path, bestand, monkeypatch):
@@ -309,3 +377,128 @@ def test_max_pages_begrenzt_den_ganzen_lauf(tmp_path, bestand):
                                    model="m", jobs=1, max_pages=1,
                                    call=FakeLLM())
     assert report.pages_text + report.pages_vision == 1
+    assert report.capped, "Bericht muss zeigen, dass die Obergrenze und nicht der Bestand den Lauf beendet hat"
+
+
+def test_max_pages_wird_nicht_erreicht_capped_bleibt_falsch(tmp_path, bestand):
+    """capped darf nur True sein, wenn die Obergrenze wirklich Seiten gekappt hat."""
+    data = tmp_path / "illico-data"
+    report = docs.ingest_documents(target=bestand, data=data, label="l",
+                                   model="m", jobs=1, max_pages=100,
+                                   call=FakeLLM())
+    assert not report.capped
+
+
+def test_max_pages_bindet_versuche_nicht_nur_erfolge(tmp_path, bestand, monkeypatch):
+    """Finding 3: schlaegt jede Seite fehl, darf --max-pages trotzdem nicht
+    umgangen werden. Vor dem Fix wurde budget nur bei Erfolg dekrementiert —
+    bei lauter Fehlschlaegen blieb es unveraendert und jedes der zwei
+    Dokumente im `bestand`-Fixture bekam das volle Budget erneut, macht
+    insgesamt 2 Modellaufrufe statt der vorgegebenen 1."""
+    monkeypatch.setattr(docs, "extract_text", lambda page: "")
+
+    def boom(model, messages, system=None, max_tokens=2000, retries=3):
+        raise RuntimeError("Modell kaputt")
+
+    data = tmp_path / "illico-data"
+    report = docs.ingest_documents(target=bestand, data=data, label="l",
+                                   model="m", jobs=1, max_pages=1,
+                                   call=boom)
+    assert report.pages_failed == 1, (
+        "budget muss beim Versuch abgezogen werden, nicht erst beim Erfolg — "
+        f"sonst versucht jedes Dokument erneut die volle Obergrenze (war: {report.pages_failed})"
+    )
+
+
+def make_multi_page_pdf(n: int) -> bytes:
+    """Baut ein winziges, gueltiges PDF mit `n` inhaltsleeren Seiten, die sich
+    einen Content-Stream teilen. Nur die Seitenzahl zaehlt fuer diese Tests —
+    Text/Rendering wird ohnehin gestubbt."""
+    kids = " ".join(f"{i} 0 R" for i in range(3, 3 + n))
+    content_obj = 3 + n
+    parts = [b"%PDF-1.4\n",
+             b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+             f"2 0 obj<</Type/Pages/Kids[{kids}]/Count {n}>>endobj\n".encode()]
+    for i in range(n):
+        obj_num = 3 + i
+        parts.append(
+            f"{obj_num} 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+            f"/Contents {content_obj} 0 R>>endobj\n".encode()
+        )
+    parts.append(f"{content_obj} 0 obj<</Length 4>>stream\nq Q\nendstream\nendobj\n".encode())
+    parts.append(b"trailer<</Root 1 0 R>>\n")
+    return b"".join(parts)
+
+
+MULTI_PAGE_PDF = make_multi_page_pdf(3)
+
+
+def test_grosse_dokumente_werden_in_chunks_verarbeitet(tmp_path, monkeypatch):
+    """Finding 7: der komplette PNG-Satz eines Dokuments darf nicht auf einmal
+    im Speicher liegen. Statt Speicher zu messen, prueft der Test die
+    beobachtbare Konsequenz der Chunk-Aufteilung: bei jobs=1 (chunk_size=4)
+    braucht ein 5-Seiten-Dokument zwei ThreadPoolExecutor-Durchlaeufe statt
+    einem einzigen fuer alle 5 Seiten."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    src = tmp_path / "bestand"
+    src.mkdir()
+    (src / "gross.pdf").write_bytes(make_multi_page_pdf(5))
+    data = tmp_path / "illico-data"
+
+    monkeypatch.setattr(docs, "extract_text", lambda page: "")
+    monkeypatch.setattr(docs, "render_page_png", lambda page, dpi: b"\x89PNG-fake")
+
+    pool_sizes = []
+    real_pool = ThreadPoolExecutor
+
+    def fake_pool_ctor(*args, **kwargs):
+        pool_sizes.append(True)
+        return real_pool(*args, **kwargs)
+
+    monkeypatch.setattr(docs, "ThreadPoolExecutor", fake_pool_ctor)
+
+    docs.ingest_documents(target=src, data=data, label="l", model="m",
+                          jobs=1, call=FakeLLM())
+
+    assert len(pool_sizes) == 2, (
+        "5 Seiten bei chunk_size=jobs*4=4 muessen in zwei Chunks laufen, "
+        f"nicht in einem — war {len(pool_sizes)}"
+    )
+
+
+def test_manifest_wird_waehrend_des_dokuments_gesichert(tmp_path, monkeypatch):
+    """Finding 1: bricht der Lauf mitten in einem Dokument ab (hier: LLMAuthError
+    auf Seite 2 von 3), muss die bereits erledigte Seite 1 im Manifest stehen —
+    sonst zahlt ein Neustart die schon bezahlte Vision-Seite erneut, und weil
+    Vision nicht deterministisch ist, invalidiert das auch noch den
+    Destillat-Cache. Vor dem Fix stand save_manifest() erst NACH dem
+    ThreadPoolExecutor-Block; ein Escape mitten aus dem Block (Ctrl-C,
+    LLMAuthError-Re-Raise, Crash) hat pages_done nie geschrieben."""
+    import illico_llm
+
+    src = tmp_path / "bestand"
+    src.mkdir()
+    (src / "doc.pdf").write_bytes(MULTI_PAGE_PDF)
+    data = tmp_path / "illico-data"
+
+    monkeypatch.setattr(docs, "extract_text", lambda page: "")
+    monkeypatch.setattr(docs, "render_page_png", lambda page, dpi: b"\x89PNG-fake")
+
+    calls = {"n": 0}
+
+    def flaky(model, messages, system=None, max_tokens=2000, retries=3):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise illico_llm.LLMAuthError("kein Key")
+        return "# Seite\n"
+
+    with pytest.raises(illico_llm.LLMAuthError):
+        docs.ingest_documents(target=src, data=data, label="l",
+                              model="m", jobs=1, call=flaky)
+
+    manifest = docs.load_manifest(data / docs.MANIFEST_NAME)
+    entry = manifest.get("l/doc.pdf")
+    assert entry is not None, "das Manifest muss trotz Abbruch bereits einen Eintrag fuer das Dokument haben"
+    assert entry["pages_done"], "die vor dem Abbruch fertige Seite 1 muss im Manifest stehen"
+    assert 1 in entry["pages_done"]

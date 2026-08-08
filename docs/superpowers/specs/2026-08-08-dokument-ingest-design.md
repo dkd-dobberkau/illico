@@ -77,11 +77,11 @@ analog zu `migrate-lang` — und delegiert sofort an `illico_documents.py`.
 | Option | Default | Bedeutung |
 |---|---|---|
 | `--data` | `./illico-data` | Datenverzeichnis |
-| `--label` | *Pflicht* | Wird zur `domain:` und zum Ablagepfad |
+| `--label` | *Pflicht* | Wird zur `domain:` und zum Ablagepfad. Darf kein `/`, `\` oder `..` enthalten — es geht ungeprüft in `data/raw/<label>` und den Manifest-Schlüssel `<label>/…` ein und wird deshalb abgewiesen statt durchgereicht |
 | `--model` | `anthropic/claude-sonnet-5` | Modell für die Vision-Extraktion |
 | `--jobs` | 4 | Parallele LLM-Aufrufe |
 | `--fresh` | aus | Extraktions-Cache ignorieren |
-| `--max-pages` | keins | Harte Obergrenze neu extrahierter Seiten **über den ganzen Lauf**, nicht je Dokument |
+| `--max-pages` | keins | Harte Obergrenze neu **versuchter** Seiten **über den ganzen Lauf**, nicht je Dokument |
 | `--text-threshold` | 200 | Ab wie vielen Zeichen eine Seite als Textseite gilt |
 | `--force-vision` | aus | Weiche abschalten, jede Seite über Vision |
 
@@ -124,6 +124,13 @@ PDFium ist nicht ohne Weiteres threadsicher. Textextraktion und Rendering
 laufen deshalb **sequenziell im Hauptthread** (beides ist CPU-gebunden und
 schnell); nur die Vision-Aufrufe werden über einen `ThreadPoolExecutor` mit
 `--jobs` gefächert. Dort liegt ohnehin die gesamte Wartezeit.
+
+Ein Dokument wird dabei in Chunks von `max(1, --jobs) * 4` Seiten verarbeitet,
+nicht auf einmal: bei einem 300-Seiten-Scan wären sonst alle 300 gerenderten
+PNGs gleichzeitig resident (realistisch 150–600 MB). Nach jedem Chunk wird
+`_documents.json` fortgeschrieben (siehe unten) — ein Abbruch mitten im
+Dokument verliert dadurch höchstens den laufenden Chunk, nicht das ganze
+Dokument.
 
 ### Auflösung
 
@@ -179,7 +186,6 @@ language: "de"
 
 ```json
 {"handbuecher/betriebshandbuch.pdf": {"hash": "sha256:abc…",
-                                      "label": "handbuecher",
                                       "pages_total": 312,
                                       "pages_done": [1, 2, 3]}}
 ```
@@ -222,7 +228,24 @@ eigene Runde wert, wenn es auftritt.
 
 `pages_done` ist der zweite Zweck: bricht Seite 150 von 312 ab, holt der
 nächste Lauf nur die fehlenden nach — dieselbe Fehlertoleranz, die `distill_all`
-schon hat.
+schon hat. Damit das auch bei einem harten Abbruch (Strg-C, Absturz,
+`LLMAuthError`) gilt, wird das Manifest nach jedem Chunk gesichert, nicht erst
+nach dem ganzen Dokument — sonst zahlt ein Neustart die schon extrahierten
+Seiten erneut, und weil Vision nicht deterministisch antwortet, invalidiert
+das zusätzlich den Destillat-Cache für jede von ihnen. Das Schreiben selbst
+ist atomar (temp-Datei + `os.replace`, wie `illico_inventory.save_inventory`,
+`illico_distill.DistillStore.put` und `illico_crawl_status.save_crawl_status`)
+— ein Absturz mitten im Schreiben darf die Datei nicht zerreißen.
+
+`--max-pages` zählt dabei **Versuche, nicht Erfolge**: das Budget wird
+abgezogen, sobald eine Seite in einen Lauf geht, nicht erst, wenn sie
+tatsächlich extrahiert wurde. Zöge es nur bei Erfolg ab, bliebe das Budget bei
+einem durchgehend fehlschlagenden Modell (kaputtes `--model`, 400er auf
+übergroßen Bildern) unverändert, und jedes weitere Dokument bekäme erneut das
+volle Budget — bis zu `Dokumente × --max-pages` abrechenbare Aufrufe statt der
+harten Obergrenze. Endet ein Lauf, weil das Budget aufgebraucht ist, meldet er
+das explizit, damit es nicht mit einem regulär durchgearbeiteten Bestand
+verwechselt wird.
 
 **Bewusst nicht gebaut:** kein Per-Seite-Store über Dokumentversionen hinweg.
 Ändert sich ein PDF, werden seine Seiten neu extrahiert. Seitenzahlen können
@@ -253,12 +276,13 @@ den Lauf nicht töten.
 | Render einer Seite schlägt fehl | Seite als fehlgeschlagen zählen, weiter |
 | LLM-Fehler auf einer Seite | Seite fehlgeschlagen, weiter — nächster Lauf holt sie über `pages_done` nach |
 | Leere oder unbrauchbare Antwort | Wie LLM-Fehler, damit sie nicht als Erfolg im Cache landet |
+| Modell antwortet mit dem Leer-Seite-Sentinel (`(leere Seite)`) | Keine `raw/`-Datei, nicht als Text/Vision-Inhalt gezählt (eigene Zeile `pages_blank`) — aber als erledigt in `pages_done` vermerkt, sonst wird sie bei jedem Lauf erneut angefragt |
 | `LLMAuthError` | Sofort abbrechen, Exit 1 — wie `compile` |
 | Keine Dateien gefunden | Exit 1 mit Hinweis auf den Pfad |
 | Rate Limit, 529, Timeout | Kein eigener Code — `call_sync` erledigt Backoff und Retry |
 
 Abschlussbilanz: *n* Dokumente, *m* Seiten, davon *x* aus Text, *y* über Vision,
-*z* fehlgeschlagen.
+*b* leer übersprungen, *z* fehlgeschlagen.
 
 ## Tests
 

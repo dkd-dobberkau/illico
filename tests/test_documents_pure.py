@@ -1,6 +1,8 @@
 """Reine Funktionen des Dokument-Ingests: Weiche, Namensbildung, Frontmatter."""
 from pathlib import Path
 
+import pytest
+
 import illico_documents as docs
 
 
@@ -56,3 +58,24 @@ def test_frontmatter_ohne_sprache_laesst_das_feld_weg():
         title="T", rel_source="b.pdf", page_no=1, label="l", language=None,
     )
     assert "language:" not in fm
+
+
+@pytest.mark.parametrize("label", [
+    "../../etc",
+    "a/b",
+    "a\\b",
+    "..",
+    "",
+])
+def test_label_als_pfadausbruch_wird_abgewiesen(label):
+    """Finding 10: --label geht ungeprueft in `data / 'raw' / label` und in
+    den Manifest-Schluessel `f'{label}/...'` ein. Ein Label mit '/', '\\'
+    oder '..' koennte ausserhalb des Datenverzeichnisses schreiben bzw. macht
+    den --fresh-Praefix-Filter zweideutig."""
+    with pytest.raises(ValueError):
+        docs.validate_label(label)
+
+
+def test_harmloses_label_wird_akzeptiert():
+    docs.validate_label("handbuecher")
+    docs.validate_label("handbuecher-2026")

@@ -75,14 +75,22 @@ def test_schwelle_verschiebt_die_weiche(monkeypatch):
 
 
 def test_prepare_page_macht_keinen_netzaufruf(monkeypatch):
-    """Die Trennung ist der Zweck: prepare_page laeuft im Hauptthread."""
+    """Die Trennung ist der Zweck: prepare_page laeuft im Hauptthread.
+
+    Vorher wurde ein FakeLLM gebaut, aber nirgends uebergeben — die Assertion
+    `llm.calls == 0` galt unabhaengig davon, was prepare_page tut. Jetzt wird
+    die einzige Naht zum Netz (vision_markdown) so gestubbt, dass sie
+    fehlschlaegt: erreicht prepare_page sie doch, schlaegt der Test fehl.
+    """
     _patch(monkeypatch, "")
-    llm = FakeLLM()
+
+    def boom(png, model, call):
+        raise AssertionError("prepare_page darf vision_markdown nicht aufrufen")
+
+    monkeypatch.setattr(docs, "vision_markdown", boom)
 
     docs.prepare_page(FakePage(), page_no=1, threshold=200,
                       force_vision=False, dpi=200)
-
-    assert llm.calls == 0
 
 
 def test_seitennummer_ueberlebt_die_vorbereitung(monkeypatch):

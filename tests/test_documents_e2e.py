@@ -83,6 +83,12 @@ def test_erzeugte_seiten_lassen_sich_kompilieren(tmp_path, monkeypatch):
 
 
 def test_only_domains_trifft_genau_das_label(tmp_path, monkeypatch):
+    """Finding 4: `assert exit_code == 0` allein beweist nichts — traefe
+    --only-domains handbuecher gar keine raw/-Dateien, wuerde der Compile
+    trotzdem sauber durchlaufen und exit 0 liefern. Dieselben drei
+    Assertions wie in test_erzeugte_seiten_lassen_sich_kompilieren (Commit
+    1d43a94) zeigen, dass das Label wirklich getroffen und verarbeitet
+    wurde."""
     from test_compile_incremental_e2e import ScriptedLLM
 
     src = _bestand(tmp_path)
@@ -90,10 +96,16 @@ def test_only_domains_trifft_genau_das_label(tmp_path, monkeypatch):
     docs.ingest_documents(target=src, data=data, label="handbuecher",
                           model="m", jobs=1, call=FakeLLM())
 
-    monkeypatch.setattr(illico_compile, "call_llm", ScriptedLLM())
+    llm = ScriptedLLM()
+    monkeypatch.setattr(illico_compile, "call_llm", llm)
     monkeypatch.setattr(illico_compile, "canonicalize_graph", lambda g, m, p: g)
     result = runner.invoke(illico_compile.app, [
         "--data", str(data), "--jobs", "1", "--only-domains", "handbuecher",
     ])
 
     assert result.exit_code == 0, result.output
+    assert llm.calls > 0, "der Compile hat gar kein Modell angefasst"
+    assert list((data / "distill" / "v1").glob("*.json")), "kein Destillat entstanden"
+    articles = [p for p in (data / "wiki").glob("*.md")
+                if p.name not in ("_index.md", "_lint-report.md")]
+    assert articles, "kein Artikel aus den Dokumentseiten entstanden"

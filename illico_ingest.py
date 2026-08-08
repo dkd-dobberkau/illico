@@ -904,6 +904,9 @@ def documents(
         console.print(f"[red]✗ LLM authentication failed: {exc}[/red]")
         console.print("  Check your provider API key.")
         raise typer.Exit(1)
+    except ValueError as exc:
+        console.print(f"[red]✗ {exc}[/red]")
+        raise typer.Exit(1)
 
     console.print()
     console.rule("[bold green]Fertig[/bold green]")
@@ -911,9 +914,14 @@ def documents(
                   f" ({report.documents_skipped} unveraendert uebersprungen)")
     console.print(f"  Aus Textebene: [green]{report.pages_text}[/green] Seiten")
     console.print(f"  Ueber Vision:  [yellow]{report.pages_vision}[/yellow] Seiten")
+    if report.pages_blank:
+        console.print(f"  Leere Seiten:  [dim]{report.pages_blank}[/dim] uebersprungen")
     if report.pages_failed:
         console.print(f"  [yellow]⚠ {report.pages_failed} Seiten ohne Ergebnis[/yellow]"
                       " — der naechste Lauf versucht sie erneut.")
+    if report.capped:
+        console.print("  [yellow]⚠ --max-pages erreicht — Lauf vorzeitig beendet,[/yellow]"
+                      " nicht weil der Bestand zu Ende war.")
     for message in report.errors[:10]:
         console.print(f"  [red]✗[/red] {message}")
     console.print()
