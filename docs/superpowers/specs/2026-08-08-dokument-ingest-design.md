@@ -184,7 +184,19 @@ language: "de"
                                       "pages_done": [1, 2, 3]}}
 ```
 
-**Schlüssel ist der Quellpfad relativ zur Wurzel, der Hash steht im Eintrag.**
+**Schlüssel ist `<label>/<Quellpfad relativ zur Wurzel>`, der Hash steht im
+Eintrag.** Das Label gehört in den Schlüssel, weil `_documents.json` **eine**
+Datei für alle Labels ist: ohne es teilen sich zwei Ingests mit gleicher
+relativer Struktur einen Eintrag, und das zweite Dokument bekäme keine
+`raw/`-Dateien — derselbe stille Verlust wie beim Hash-Schlüssel, nur eine
+Ebene höher. Aus demselben Grund löscht `--fresh` nur die Einträge des
+laufenden Labels, nicht das ganze Manifest.
+
+**Bekannte Grenze:** dasselbe Label für zwei verschiedene Quellverzeichnisse
+mit gleicher interner Struktur kollidiert weiterhin — dann stimmen auch die
+Slugs überein und die Dokumente überschreiben sich in `raw/`. Das Label ist der
+Namensraum; zwei Bestände gehören unter zwei Labels. Der Hash-Vergleich macht
+daraus immerhin Neuextraktion statt stillem Überspringen.
 Der Hash ist der Änderungsdetektor: stimmt er, wird das Dokument übersprungen;
 weicht er ab, werden alle seine Seiten neu geholt.
 
