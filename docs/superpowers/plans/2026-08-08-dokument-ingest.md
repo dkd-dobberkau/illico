@@ -558,7 +558,7 @@ Am Dateianfang zusätzlich `import pytest` ergänzen.
 source .venv-pub/bin/activate && pytest tests/test_documents_routing.py -q
 ```
 
-Erwartet: `AttributeError: module 'illico_documents' has no attribute 'page_to_markdown'`.
+Erwartet: `AttributeError: module 'illico_documents' has no attribute 'prepare_page'`.
 
 - [ ] **Step 3: Weiche und Vision-Aufruf implementieren**
 
@@ -1449,8 +1449,10 @@ Umsetzen ein `grep -rn "source_url" *.py` und ein Blick, ob irgendwo ein
 `httpx`-Aufruf daran hängt. Ergibt sich dort ein Treffer, ist das ein Befund
 für eine eigene Runde — nicht still umbauen.
 
-**Typkonsistenz geprüft:** `page_to_markdown` liefert überall
-`tuple[str, bool]`; der Treiber nutzt dieselbe Zerlegung. `file_hash` liefert
+**Typkonsistenz geprüft:** `finish_page` liefert überall
+`tuple[str, bool]`; der Treiber nutzt dieselbe Zerlegung. `prepare_page`
+liefert überall `PreparedPage`, und genau eines von `markdown`/`png` ist
+gesetzt. `file_hash` liefert
 überall den `sha256:`-Präfix. `find_pdfs` liefert überall das Tripel
 `(root, pdfs, skipped)`. `IngestReport`-Feldnamen sind zwischen Task 5 und 6
 identisch.
