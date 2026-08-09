@@ -148,11 +148,20 @@ jedes Destillat ist ein bezahlter Modellaufruf, und ohne `_documents.json` und
 standardmäßig dabei; `--no-chats` lässt sie weg, wenn das Archiv weitergegeben
 werden soll.
 
-Zurückspielen geht ohne eigenen Befehl — das Archiv entpackt sich 1:1:
+Zurückspielen geht ohne eigenen Befehl — das Archiv hat einen Wurzelordner
+`illico-data/` und entpackt sich darunter:
 
 ```bash
-unzip backup.zip -d /ziel/verzeichnis
+unzip backup.zip -d /ziel/verzeichnis     # erstellt /ziel/verzeichnis/illico-data/…
+unzip backup.zip                          # im aktuellen Verzeichnis: illico-data/…
 ```
+
+Danach mit `--data /ziel/verzeichnis/illico-data` oder `--data ./illico-data` arbeiten.
+
+Die CLI überschreibt eine bestehende Zieldatei nicht; `-o backup.zip` bricht mit
+Fehler ab, wenn `backup.zip` schon existiert. Ein Cron-Job mit festem Dateinamen
+braucht daher entweder `-o` mit Zeitstempel (`-o backup-$(date +%s).zip`) oder
+`rm -f` vorher.
 
 Ein Export während eines laufenden `ingest` oder `compile` ist kein
 konsistenter Snapshot. Das Web-Interface warnt in dem Fall; die CLI läuft in

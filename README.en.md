@@ -143,11 +143,19 @@ distillate is a paid model call, and without `_documents.json` and
 included by default; `--no-chats` leaves them out when the archive is meant to
 be handed on.
 
-Restoring needs no separate command — the archive unpacks 1:1:
+Restoring needs no separate command — the archive has a root folder `illico-data/`
+and unpacks below it:
 
 ```bash
-unzip backup.zip -d /target/directory
+unzip backup.zip -d /target/directory     # creates /target/directory/illico-data/…
+unzip backup.zip                          # in current directory: illico-data/…
 ```
+
+Then work with `--data /target/directory/illico-data` or `--data ./illico-data`.
+
+The CLI does not overwrite an existing target file; `-o backup.zip` fails with an
+error if `backup.zip` already exists. A cron job with a fixed filename thus needs
+either `-o` with a timestamp (`-o backup-$(date +%s).zip`) or `rm -f` beforehand.
 
 An export taken while `ingest` or `compile` is running is not a consistent
 snapshot. The web interface warns about this; the CLI runs in its own process
