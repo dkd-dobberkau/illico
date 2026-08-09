@@ -133,3 +133,37 @@ def test_ziel_im_datenverzeichnis_mit_unterschiedlicher_schreibweise(tmp_path: P
 
     with pytest.raises(ValueError):
         illico_export.write_export(data, ziel)
+
+
+def test_ziel_nicht_im_datenverzeichnis_mit_schreibweise_unterschied(tmp_path: Path):
+    """Schreibweise-Unterschied allein macht kein Verzeichnis zu einem Sub-Verzeichnis.
+
+    Auf case-sensitiven Filesystemen (Linux) sind /data/Bestand und /data/bestand
+    zwei verschiedene Verzeichnisse. Ein Exportziel in /data/bestand darf nicht
+    abgelehnt werden, nur weil das Datenverzeichnis /data/Bestand ist.
+
+    Auf case-insensitiven Filesystemen (APFS) laesst sich dieser Test nicht
+    ausfuehren, weil /data/Bestand und /data/bestand auf das gleiche
+    Verzeichnis verweisen — in diesem Fall wird der Test uebersprungen.
+    """
+    data = tmp_path / "Bestand"
+    data.mkdir()
+
+    # Versuche, ein Verzeichnis mit anderer Schreibweise anzulegen
+    other = tmp_path / "bestand"
+    try:
+        other.mkdir()
+    except FileExistsError:
+        # Auf case-insensitiven Filesystemen (APFS): Bestand und bestand
+        # sind das gleiche Verzeichnis, also existiert other schon
+        pytest.skip("Case-insensitives Dateisystem erkannt")
+
+    # Jetzt haben wir zwei verschiedene Verzeichnisse auf case-sensitiven Systemen
+    backup = other / "backup"
+    backup.mkdir()
+    ziel = backup / "export.zip"
+
+    # Das Ziel liegt NICHT im Datenverzeichnis, deshalb sollte es NICHT abgelehnt werden
+    result = illico_export.write_export(data, ziel)
+    assert result.path == ziel
+    assert result.files == 0  # Leer, aber valid

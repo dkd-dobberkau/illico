@@ -48,22 +48,30 @@ def _ausgeschlossen(path: Path, data: Path, chats: bool) -> bool:
 def _ziel_in_data(ziel: Path, data: Path) -> bool:
     """Prueft, ob ziel im Datenverzeichnis liegt.
 
-    Nutzt case-insensitiven Pfad-Vergleich um case-insensitivity auf APFS
-    (macOS) zu handhaben.
+    Nutzt case-sensitiven Vergleich als Primärlogik (funktioniert auf Linux),
+    mit case-insensitivem Fallback für APFS (macOS).
     """
     ziel_resolved = ziel.resolve()
     data_resolved = data.resolve()
 
-    # Vergleiche die Pfad-Komponenten
+    # Schritt 1: Case-sensitiver Vergleich (primär, funktioniert auf Linux)
+    # is_relative_to() ist die zuverlässigste Methode auf case-sensitiven Systemen
+    try:
+        ziel_resolved.relative_to(data_resolved)
+        return True
+    except ValueError:
+        pass
+
+    # Schritt 2: Fallback zu case-insensitivem Vergleich für APFS
+    # Nur wenn der case-sensitive Vergleich fehlgeschlagen ist.
+    # Dies ist defensiv: nur nötig auf Systemen, wo case-insensitivity auftritt.
     ziel_parts = ziel_resolved.parts
     data_parts = data_resolved.parts
 
-    # Wenn ziel kürzer als data ist, kann es nicht darin liegen
     if len(ziel_parts) < len(data_parts):
         return False
 
-    # Vergleiche die ersten len(data_parts) Komponenten von ziel mit data
-    # Case-insensitive Vergleich für APFS-Kompatibilität
+    # Vergleiche die ersten len(data_parts) Komponenten case-insensitiv
     for zp, dp in zip(ziel_parts[:len(data_parts)], data_parts):
         if zp.lower() != dp.lower():
             return False
