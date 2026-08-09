@@ -34,6 +34,7 @@ illico-ingest = "illico_ingest:app"
 illico-compile = "illico_compile:app"
 illico-chat = "illico_chat:app"
 illico-serve = "illico_app:cli"
+illico-export = "illico_export:app"
 
 [tool.hatch.build.targets.wheel]
 bypass-selection = true

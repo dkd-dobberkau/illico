@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import os
+import typer
 import zipfile
 
 ARCHIVE_ROOT = "illico-data"
@@ -103,3 +104,44 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
             result.files += 1
             result.bytes_raw += path.stat().st_size
     return result
+
+
+app = typer.Typer(add_completion=False,
+                  help="Exportiert das Illico-Datenverzeichnis als ZIP.")
+
+
+@app.command()
+def export(
+    output: Path = typer.Option(
+        None, "--output", "-o",
+        help="Zieldatei. Ohne Angabe: illico-export-<zeitstempel>.zip im "
+             "aktuellen Verzeichnis"),
+    data: Path = typer.Option(
+        Path(os.environ.get("ILLICO_DATA", "./illico-data")), "--data", "-d",
+        help="Illico-Datenverzeichnis"),
+    no_chats: bool = typer.Option(
+        False, "--no-chats", help="Chatverlaeufe auslassen"),
+):
+    """Packt das Datenverzeichnis in ein ZIP — inklusive Destillaten und
+    Manifesten, damit der Bestand woanders ohne neue Modellkosten weiterlaeuft.
+    """
+    ziel = Path(output) if output else Path.cwd() / default_filename()
+    if ziel.exists():
+        typer.echo(f"✗ {ziel} existiert bereits — nicht ueberschrieben.", err=True)
+        raise typer.Exit(1)
+    try:
+        result = write_export(data, ziel, chats=not no_chats)
+    except (OSError, ValueError) as exc:
+        # OSError deckt fehlendes Datenverzeichnis (FileNotFoundError) und
+        # nicht schreibbares Ziel (PermissionError) ab. Ein Stacktrace waere
+        # hier keine Fehlermeldung.
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1)
+    groesse = ziel.stat().st_size / 1_048_576
+    typer.echo(f"✓ {result.files} Dateien in {ziel} ({groesse:.1f} MB)")
+    if no_chats:
+        typer.echo("  Chatverlaeufe ausgelassen.")
+
+
+if __name__ == "__main__":
+    app()

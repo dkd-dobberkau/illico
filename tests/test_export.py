@@ -172,3 +172,82 @@ def test_ziel_nicht_im_datenverzeichnis_mit_schreibweise_unterschied(tmp_path: P
     result = illico_export.write_export(data, ziel)
     assert result.path == ziel
     assert result.files == 0  # Leer, aber valid
+
+
+from typer.testing import CliRunner
+
+runner = CliRunner()
+
+
+def test_cli_schreibt_an_den_angegebenen_pfad(tmp_path: Path):
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "mein-backup.zip"
+
+    ergebnis = runner.invoke(illico_export.app,
+                             ["-d", str(data), "-o", str(ziel)])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert ziel.exists()
+    assert "illico-data/wiki/artikel.md" in _namen(ziel)
+
+
+def test_cli_ohne_o_erzeugt_zeitstempel_datei(tmp_path: Path, monkeypatch):
+    data = _bestand(tmp_path)
+    arbeitsverzeichnis = tmp_path / "cwd"
+    arbeitsverzeichnis.mkdir()
+    monkeypatch.chdir(arbeitsverzeichnis)
+
+    ergebnis = runner.invoke(illico_export.app, ["-d", str(data)])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    erzeugt = list(arbeitsverzeichnis.glob("illico-export-*.zip"))
+    assert len(erzeugt) == 1, f"erwartet genau ein Archiv, war: {erzeugt}"
+
+
+def test_cli_ueberschreibt_bestehende_datei_nicht(tmp_path: Path):
+    """Ein versehentlich ueberschriebenes Backup ist genau der Verlust, den die
+    Funktion verhindern soll."""
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "vorhanden.zip"
+    ziel.write_text("altes backup", encoding="utf-8")
+
+    ergebnis = runner.invoke(illico_export.app,
+                             ["-d", str(data), "-o", str(ziel)])
+
+    assert ergebnis.exit_code == 1
+    assert ziel.read_text(encoding="utf-8") == "altes backup"
+
+
+def test_cli_no_chats_wird_durchgereicht(tmp_path: Path):
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "ohne-chats.zip"
+
+    ergebnis = runner.invoke(illico_export.app,
+                             ["-d", str(data), "-o", str(ziel), "--no-chats"])
+
+    assert ergebnis.exit_code == 0, ergebnis.output
+    assert not [n for n in _namen(ziel) if "/chats/" in n]
+
+
+def test_cli_meldet_fehlendes_datenverzeichnis(tmp_path: Path):
+    ergebnis = runner.invoke(illico_export.app,
+                             ["-d", str(tmp_path / "weg"), "-o", str(tmp_path / "x.zip")])
+
+    assert ergebnis.exit_code == 1
+    assert not (tmp_path / "x.zip").exists()
+
+
+def test_cli_meldet_nicht_schreibbares_ziel(tmp_path: Path):
+    """Ein Stacktrace ist keine Fehlermeldung — wer ein Backup anstoesst, soll
+    lesen koennen, warum es nicht ging."""
+    data = _bestand(tmp_path)
+    gesperrt = tmp_path / "gesperrt"
+    gesperrt.mkdir()
+    gesperrt.chmod(0o500)
+    try:
+        ergebnis = runner.invoke(illico_export.app,
+                                 ["-d", str(data), "-o", str(gesperrt / "x.zip")])
+        assert ergebnis.exit_code == 1
+        assert "✗" in ergebnis.output or "✗" in (ergebnis.stderr or "")
+    finally:
+        gesperrt.chmod(0o700)
