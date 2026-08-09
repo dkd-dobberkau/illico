@@ -221,3 +221,54 @@ def test_missing_language_does_not_break(tmp_path: Path):
     result = distill_all(raw, store, "test-model", _PROMPT, RecordingCall(), jobs=1)
 
     assert next(iter(result.distillates.values()))["language"] == ""
+
+
+def test_kaputter_batch_meldet_die_ursache(tmp_path: Path):
+    """Erster echter Compile-Lauf (450 Seiten, 2026-08-09): 87 Seiten kamen
+    ohne Destillat zurueck, im Log standen 4 Ursachen. `_distill_batch` fing
+    jede Ausnahme mit einem nackten `except Exception` und gab nur die Hashes
+    zurueck — ein gekippter Batch nahm 15 Seiten mit und hinterliess keine
+    Spur. Ohne Ursache im Ergebnis ist nicht diagnostizierbar, warum ein Batch
+    scheitert, und die Zusage "der naechste Lauf versucht sie erneut" laesst
+    sich nicht pruefen.
+    """
+    raw = {f"s{i}.md": _page(f"T{i}", f"Body {i}") for i in range(3)}
+    store = DistillStore(tmp_path / "d")
+
+    def boom(prompt, model, max_tokens=2000):
+        raise RuntimeError("Verbindung abgebrochen")
+
+    result = distill_all(raw, store, "test-model", _PROMPT, boom, jobs=1)
+
+    assert len(result.failed) == 3
+    assert result.errors, "ein gescheiterter Batch muss eine Ursache hinterlassen"
+    bericht = " ".join(result.errors)
+    assert "RuntimeError" in bericht, f"Ausnahmetyp fehlt: {bericht!r}"
+    assert "Verbindung abgebrochen" in bericht, f"Meldung fehlt: {bericht!r}"
+    assert ".md" in bericht, (
+        f"die betroffenen Seiten muessen benannt sein, sonst ist der Fehler "
+        f"nicht zuzuordnen: {bericht!r}"
+    )
+
+
+def test_fehlende_seite_in_der_antwort_wird_benannt(tmp_path: Path):
+    """Der zweite stumme Pfad: das Modell antwortet, laesst aber eine Seite
+    aus (abgeschnittenes JSON). Bisher landete sie wortlos in `failed` und war
+    von einem gekippten Batch nicht zu unterscheiden.
+    """
+    raw = {f"s{i}.md": _page(f"T{i}", f"Body {i}") for i in range(3)}
+    store = DistillStore(tmp_path / "d")
+
+    def lossy(prompt, model, max_tokens=2000):
+        ids = [line.split()[2] for line in prompt.splitlines() if line.startswith("### PAGE ")]
+        return _response_for([{"id": i} for i in ids[:-1]])
+
+    result = distill_all(raw, store, "test-model", _PROMPT, lossy, jobs=1)
+
+    assert len(result.failed) == 1
+    assert len(result.errors) == 1, (
+        f"genau die eine ausgelassene Seite muss gemeldet werden (war: {result.errors})"
+    )
+    assert ".md" in result.errors[0], (
+        f"die Meldung muss die Seite benennen: {result.errors[0]!r}"
+    )

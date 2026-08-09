@@ -1317,6 +1317,15 @@ def compile(
                     f"  [yellow]⚠ {len(distilled.failed)} Seiten ohne Destillat[/yellow] — "
                     "der naechste Lauf versucht sie erneut."
                 )
+                # Ohne die Ursachen ist nicht zu erkennen, ob der naechste Lauf
+                # ueberhaupt etwas ausrichten kann: ein Rate-Limit gibt sich,
+                # ein deterministisch kippender Batch nicht.
+                for message in distilled.errors[:5]:
+                    console.print(f"    [dim]{message}[/dim]")
+                if len(distilled.errors) > 5:
+                    console.print(
+                        f"    [dim]… und {len(distilled.errors) - 5} weitere[/dim]"
+                    )
 
             inv_path = data / inv_path_name
             # Zwei getrennte Kopien: `previous` ist der Vergleichsstand fuer die

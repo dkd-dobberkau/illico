@@ -84,6 +84,11 @@ class DistillStore:
 class DistillResult:
     distillates: dict[str, dict] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
+    # Je gescheitertem Batch bzw. ausgelassener Seite eine lesbare Zeile mit
+    # Ursache und betroffenen Quellen. Ohne die ist ein Fehlschlag nicht
+    # zuzuordnen: `failed` enthaelt nur Hashes, und ein gekippter Batch sieht
+    # darin genauso aus wie eine einzeln ausgelassene Seite.
+    errors: list[str] = field(default_factory=list)
 
 
 def group_pages(raw_files: dict[str, str]) -> dict[str, dict]:
@@ -136,22 +141,46 @@ def _parse_batch(response: str) -> dict[str, dict]:
     return {p["id"]: p for p in data.get("pages", []) if isinstance(p, dict) and p.get("id")}
 
 
-def _distill_batch(batch, model, prompt, call) -> tuple[dict, list]:
+def _batch_sources(batch, limit: int = 3) -> str:
+    """Kurze, lesbare Kennzeichnung der Seiten eines Batches.
+
+    Hashes sind fuer die Fehlersuche wertlos — der Pfad sagt, welche Seite
+    betroffen ist. Bei grossen Batches reichen die ersten paar plus Anzahl.
+    """
+    namen = [page["sources"][0] if page.get("sources") else page["hash"]
+             for page in batch]
+    if len(namen) <= limit:
+        return ", ".join(namen)
+    return f"{', '.join(namen[:limit])} … (+{len(namen) - limit} weitere)"
+
+
+def _distill_batch(batch, model, prompt, call) -> tuple[dict, list, list]:
     try:
         response = call(_build_batch_prompt(prompt, batch), model, 8192)
         parsed = _parse_batch(response)
-    except Exception:
+    except Exception as exc:
         # Ein kaputter Batch darf den Lauf nicht killen. Die Seiten bleiben
-        # ohne Destillat und werden beim naechsten Lauf erneut versucht.
-        return {}, [page["hash"] for page in batch]
+        # ohne Destillat und werden beim naechsten Lauf erneut versucht — aber
+        # die Ursache muss mit, sonst ist nicht zu erkennen, ob der Fehler
+        # transient (Rate-Limit, Timeout) oder deterministisch ist. Bei einem
+        # deterministischen Fehler holt kein Folgelauf die Seiten je nach.
+        return {}, [page["hash"] for page in batch], [
+            f"Batch mit {len(batch)} Seiten ({_batch_sources(batch)}): "
+            f"{type(exc).__name__}: {exc}"
+        ]
 
     made: dict[str, dict] = {}
     failed: list[str] = []
+    errors: list[str] = []
     now = datetime.now().isoformat(timespec="seconds")
     for index, page in enumerate(batch):
         item = parsed.get(f"p{index}")
         if not item:
             failed.append(page["hash"])
+            errors.append(
+                f"{_batch_sources([page])}: fehlt in der Modellantwort "
+                "(moeglicherweise abgeschnitten)"
+            )
             continue
         made[page["hash"]] = {
             "schema": SCHEMA,
@@ -167,7 +196,7 @@ def _distill_batch(batch, model, prompt, call) -> tuple[dict, list]:
             "model": model,
             "created": now,
         }
-    return made, failed
+    return made, failed, errors
 
 
 def distill_all(
@@ -208,10 +237,11 @@ def distill_all(
             for batch in batches
         ]
         for future in futures:
-            made, failed = future.result()
+            made, failed, errors = future.result()
             for digest, distillate in made.items():
                 store.put(distillate)
                 result.distillates[digest] = distillate
             result.failed.extend(failed)
+            result.errors.extend(errors)
 
     return result
