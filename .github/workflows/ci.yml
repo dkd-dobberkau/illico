@@ -2,10 +2,20 @@ name: CI
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.12", "3.13"]
+        # macOS ist kein Selbstzweck: der Schutz davor, dass ein Export-Archiv
+        # sich selbst einpackt, haengt am Dateisystem. Die zugehoerigen Tests
+        # stellen fest, ob Gross-/Kleinschreibung unterschieden wird, und
+        # ueberspringen sich auf der jeweils anderen Art. Ohne einen Lauf auf
+        # einem case-insensitiven Dateisystem (APFS) bliebe genau der Zweig
+        # ungetestet, der dreimal nachgebessert werden musste.
+        include:
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

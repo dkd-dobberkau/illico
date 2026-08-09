@@ -2,6 +2,45 @@
 
 Alle nennenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## Unreleased — Bestands-Export, und was der erste echte Lauf zutage förderte
+
+**Neu: `illico-export`.** Das Datenverzeichnis lässt sich als ZIP sichern —
+über die Kommandozeile, über `GET /api/export` oder über den Knopf „Bestand
+exportieren" im Web-Interface. Das Archiv enthält den kompletten Bestand
+einschließlich der Destillate und Manifeste, denn jedes Destillat ist ein
+bezahlter Modellaufruf: ein Archiv aus nur `raw/` und `wiki/` sähe vollständig
+aus und zwänge die Zielmaschine trotzdem, alles neu zu destillieren.
+Zurückspielen braucht keinen eigenen Befehl, das Archiv entpackt sich nach
+`illico-data/`.
+
+**Achtung beim Aktualisieren:** Die Exportdatei bekommt die Rechte `0600`
+statt der bisher üblichen `0644`. Das ist die Folge des Schutzes gegen zwei
+gleichzeitige Exporte auf dieselbe Zieldatei und für ein Archiv mit
+Chatverläufen die sicherere Voreinstellung — ein Cron-Job, der die Sicherung
+anschließend als anderer Nutzer weiterreicht, muss das berücksichtigen.
+
+**`--max-pages` deckelt jetzt Kosten statt Seiten.** Beim Dokument-Ingest
+rechnete die Obergrenze gegen alle offenen Seiten statt gegen die
+kostenpflichtigen; `--max-pages 5` verarbeitete fünf Seiten und verbrauchte
+dabei trotzdem zwei Vision-Aufrufe. Als Schutz vor einem Vision-Sturm war der
+Deckel damit wirkungslos. Seiten mit Textebene laufen jetzt immer durch, weil
+sie nichts kosten, und die neue Bilanzzeile `Vision-Aufrufe` weist die
+tatsächlich bezahlte Menge aus — sie liegt über `Ueber Vision`, weil auch
+Seiten bezahlt sind, die das Modell als leer zurückmeldet.
+
+**Der Compile verliert keine Seiten mehr und sagt, wenn doch.** Ein
+gescheiterter Destillations-Batch nahm bisher fünfzehn Seiten mit und
+hinterließ keine Spur — über drei Läufe blieben dieselben Seiten liegen, ohne
+dass erkennbar war, warum. Fehler nennen jetzt ihre Ursache, und ein an der
+Token-Grenze abgeschnittener Batch reicht die fehlenden Seiten in kleineren
+Häppchen nach. Auf einem Testbestand stieg die Abdeckung damit von 81 auf 100
+Prozent.
+
+**Artikel tragen wieder brauchbare Metadaten.** Das `compiled:`-Datum kam vom
+Modell und war frei erfunden; der Kopf wurde außerdem mal als Frontmatter, mal
+als ```yaml-Codeblock geliefert, was weder gültiges Frontmatter noch einen
+geschlossenen Codeblock ergab. Beides setzt der Compile jetzt selbst.
+
 ## v0.3.4 — Sprachläufe teilen sich kein Inventar mehr
 
 `--lang de` und `--lang en` legen Wiki, Graph und Destillat-Store getrennt ab —
