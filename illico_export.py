@@ -45,6 +45,32 @@ def _ausgeschlossen(path: Path, data: Path, chats: bool) -> bool:
     return False
 
 
+def _ziel_in_data(ziel: Path, data: Path) -> bool:
+    """Prueft, ob ziel im Datenverzeichnis liegt.
+
+    Nutzt case-insensitiven Pfad-Vergleich um case-insensitivity auf APFS
+    (macOS) zu handhaben.
+    """
+    ziel_resolved = ziel.resolve()
+    data_resolved = data.resolve()
+
+    # Vergleiche die Pfad-Komponenten
+    ziel_parts = ziel_resolved.parts
+    data_parts = data_resolved.parts
+
+    # Wenn ziel kürzer als data ist, kann es nicht darin liegen
+    if len(ziel_parts) < len(data_parts):
+        return False
+
+    # Vergleiche die ersten len(data_parts) Komponenten von ziel mit data
+    # Case-insensitive Vergleich für APFS-Kompatibilität
+    for zp, dp in zip(ziel_parts[:len(data_parts)], data_parts):
+        if zp.lower() != dp.lower():
+            return False
+
+    return True
+
+
 def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
     """Schreibt das Datenverzeichnis als ZIP nach `ziel`.
 
@@ -55,7 +81,7 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
     ziel = Path(ziel)
     if not data.is_dir():
         raise FileNotFoundError(f"Datenverzeichnis nicht gefunden: {data}")
-    if ziel.resolve().is_relative_to(data.resolve()):
+    if _ziel_in_data(ziel, data):
         raise ValueError(
             f"Das Ziel {ziel} liegt im Datenverzeichnis — das Archiv wuerde sich "
             "selbst einpacken."

@@ -114,3 +114,22 @@ def test_default_filename_traegt_datum_und_uhrzeit():
     assert name == "illico-export-20260809-1612.zip", (
         "die Uhrzeit muss mit rein, sonst kollidieren zwei Sicherungen am selben Tag"
     )
+
+
+def test_ziel_im_datenverzeichnis_mit_unterschiedlicher_schreibweise(tmp_path: Path):
+    """Case-insensitivity: Ziel wird abgelehnt auch bei abweichender Schreibweise.
+
+    Auf case-insensitiven Filesystemen (APFS, NTFS) koennen Ziel und Data
+    unterschiedliche Schreibweisen haben und trotzdem auf das gleiche
+    Verzeichnis verweisen. Der Containment-Check muss das erkennen.
+    """
+    data = tmp_path / "TestData"
+    data.mkdir()
+
+    # Auf APFS: testdata und TestData verweisen auf das gleiche Verzeichnis
+    # Der Pfad existiert noch nicht (ziel wird erst geschrieben),
+    # aber der Containment-Check soll das erkennen
+    ziel = tmp_path / "testdata" / "export.zip"  # lowercase testdata
+
+    with pytest.raises(ValueError):
+        illico_export.write_export(data, ziel)
