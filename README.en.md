@@ -116,6 +116,12 @@ Further options: `--jobs`, `--fresh`, `--max-pages`, `--text-threshold`
 `--force-vision` (turn off the switch, for a collection that is scanned
 throughout).
 
+`--max-pages` caps **vision calls**, not pages: pages with a text layer always
+run through in full, because they cost nothing. The `Vision-Aufrufe` line in
+the closing summary is the amount actually billed — it sits above `Ueber
+Vision`, because pages the model reports back as blank, and pages that fail,
+are paid for too.
+
 A repeat run over unchanged files costs nothing: Illico remembers in
 `_documents.json` which PDFs it has already extracted under the given
 `--label`. A changed file is picked up automatically; `--fresh` only drops

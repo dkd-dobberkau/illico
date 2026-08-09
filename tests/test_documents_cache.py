@@ -502,3 +502,99 @@ def test_manifest_wird_waehrend_des_dokuments_gesichert(tmp_path, monkeypatch):
     assert entry is not None, "das Manifest muss trotz Abbruch bereits einen Eintrag fuer das Dokument haben"
     assert entry["pages_done"], "die vor dem Abbruch fertige Seite 1 muss im Manifest stehen"
     assert 1 in entry["pages_done"]
+
+
+def _seiten_texte(monkeypatch, texte: list[str]) -> None:
+    """Laesst extract_text der Reihe nach `texte` liefern — eine Seite je
+    Eintrag. prepare_page laeuft sequenziell im Hauptthread in
+    Seitenreihenfolge, der Zaehler bildet die Seitennummer also verlaesslich ab.
+    """
+    folge = iter(texte)
+    monkeypatch.setattr(docs, "extract_text", lambda page: next(folge, ""))
+    monkeypatch.setattr(docs, "render_page_png", lambda page, dpi: b"\x89PNG-fake")
+
+
+def test_leere_seiten_erscheinen_in_der_kostenbilanz(tmp_path, monkeypatch):
+    """Erster echter Lauf (456-Seiten-PDF, 2026-08-09): 9 Seiten gingen ans
+    Modell, die Bilanz meldete 3 unter `Ueber Vision`. Die 6 als leer
+    erkannten Seiten treffen `continue` vor `pages_vision += 1` — sie wurden
+    aber gerendert, geschickt und bezahlt. Wer die Zeile als Kostenzeile liest,
+    unterschaetzt die Rechnung; bei Scans mit leeren Rueckseiten um ein
+    Vielfaches. Der Bericht muss die tatsaechlichen Aufrufe ausweisen.
+    """
+    src = tmp_path / "bestand"
+    src.mkdir()
+    (src / "doc.pdf").write_bytes(MULTI_PAGE_PDF)   # 3 Seiten
+    data = tmp_path / "illico-data"
+
+    _seiten_texte(monkeypatch, ["", "", ""])        # alle drei ueber Vision
+    llm = FakeLLM(answer=docs.BLANK_PAGE_SENTINEL)  # das Modell sieht nur Leeres
+
+    report = docs.ingest_documents(target=src, data=data, label="l",
+                                   model="m", jobs=1, call=llm)
+
+    assert llm.calls == 3, "alle drei Seiten wurden ans Modell geschickt"
+    assert report.pages_blank == 3
+    assert report.pages_vision == 0, "keine der Seiten hat Inhalt geliefert"
+    assert report.vision_calls == llm.calls, (
+        "die Kostenzeile muss die bezahlten Aufrufe zeigen, nicht nur die "
+        f"Aufrufe mit Ausbeute (war: {report.vision_calls} statt {llm.calls})"
+    )
+
+
+def test_max_pages_deckelt_vision_aufrufe_nicht_textseiten(tmp_path, monkeypatch):
+    """Zweiter Befund aus demselben Lauf: das Budget wurde gegen
+    `pending_pages` gerechnet, also gegen alle offenen Seiten statt gegen die
+    kostenpflichtigen. Belegt mit `--max-pages 5`: 5 Seiten verarbeitet und
+    dabei trotzdem 2 Vision-Aufrufe verbraucht. Als Schutz vor einem
+    Vision-Sturm war der Deckel damit wirkungslos.
+
+    Erwartet wird jetzt: Textseiten laufen immer durch (sie kosten nichts),
+    der Deckel bindet ausschliesslich die Vision-Aufrufe.
+    """
+    src = tmp_path / "bestand"
+    src.mkdir()
+    (src / "doc.pdf").write_bytes(MULTI_PAGE_PDF)   # 3 Seiten
+    data = tmp_path / "illico-data"
+
+    # Seite 1 hat eine Textebene, Seiten 2 und 3 muessen ueber Vision.
+    _seiten_texte(monkeypatch, ["x" * 500, "", ""])
+    llm = FakeLLM()
+
+    report = docs.ingest_documents(target=src, data=data, label="l",
+                                   model="m", jobs=1, max_pages=1, call=llm)
+
+    assert llm.calls == 1, (
+        f"--max-pages 1 darf genau einen Vision-Aufruf zulassen (war: {llm.calls})"
+    )
+    assert report.pages_text == 1, (
+        "die Textseite kostet nichts und muss trotz erschoepftem Budget "
+        f"verarbeitet werden (war: {report.pages_text})"
+    )
+    assert report.pages_vision == 1
+    assert report.capped, "eine Vision-Seite blieb offen — das muss der Bericht zeigen"
+
+
+def test_leere_seiten_verbrauchen_das_vision_budget(tmp_path, monkeypatch):
+    """Eine als leer erkannte Seite ist bezahlt. Sie muss das Budget genauso
+    mindern wie eine mit Ausbeute — sonst laesst `--max-pages N` bei einem
+    Scan-Bestand mit leeren Rueckseiten beliebig viele Aufrufe mehr zu.
+    """
+    src = tmp_path / "bestand"
+    src.mkdir()
+    (src / "doc.pdf").write_bytes(make_multi_page_pdf(4))
+    data = tmp_path / "illico-data"
+
+    # Seite 1 traegt Text, die Seiten 2-4 sind leere Scans. Die fuehrende
+    # Textseite ist der Punkt: unter der alten Semantik verbrauchte sie einen
+    # Platz im Budget, unter der neuen laeuft sie kostenlos durch und das
+    # Budget steht voll fuer die bezahlten Aufrufe zur Verfuegung.
+    _seiten_texte(monkeypatch, ["x" * 500, "", "", ""])
+    llm = FakeLLM(answer=docs.BLANK_PAGE_SENTINEL)
+
+    docs.ingest_documents(target=src, data=data, label="l", model="m",
+                          jobs=1, max_pages=2, call=llm)
+
+    assert llm.calls == 2, (
+        f"zwei leere Seiten schoepfen --max-pages 2 aus (war: {llm.calls})"
+    )

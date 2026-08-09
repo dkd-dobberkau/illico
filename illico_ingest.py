@@ -861,7 +861,7 @@ def documents(
     model: Optional[str] = typer.Option(None, "--model", "-m", help="Modell fuer die Vision-Extraktion (default: anthropic/claude-sonnet-5)"),
     jobs: int = typer.Option(4, "--jobs", "-j", help="Parallele LLM-Aufrufe"),
     fresh: bool = typer.Option(False, "--fresh", help="Extraktions-Cache ignorieren"),
-    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Harte Obergrenze neu extrahierter Seiten ueber den ganzen Lauf"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Harte Obergrenze versuchter Vision-Aufrufe ueber den ganzen Lauf. Seiten mit Textebene laufen immer durch, sie kosten nichts"),
     text_threshold: int = typer.Option(200, "--text-threshold", help="Ab wie vielen Zeichen eine Seite als Textseite gilt"),
     force_vision: bool = typer.Option(False, "--force-vision", help="Weiche abschalten, jede Seite ueber Vision"),
 ):
@@ -915,13 +915,18 @@ def documents(
     console.print(f"  Aus Textebene: [green]{report.pages_text}[/green] Seiten")
     console.print(f"  Ueber Vision:  [yellow]{report.pages_vision}[/yellow] Seiten")
     if report.pages_blank:
-        console.print(f"  Leere Seiten:  [dim]{report.pages_blank}[/dim] uebersprungen")
+        console.print(f"  Leere Seiten:  [dim]{report.pages_blank}[/dim] verworfen")
     if report.pages_failed:
         console.print(f"  [yellow]⚠ {report.pages_failed} Seiten ohne Ergebnis[/yellow]"
                       " — der naechste Lauf versucht sie erneut.")
+    if report.vision_calls:
+        # Eigene Zeile, weil pages_vision als Kostenangabe zu niedrig ist:
+        # leere und gescheiterte Seiten sind bezahlt und tauchen dort nicht auf.
+        console.print(f"  Vision-Aufrufe: [yellow]{report.vision_calls}[/yellow]"
+                      " — das ist die bezahlte Menge.")
     if report.capped:
-        console.print("  [yellow]⚠ --max-pages erreicht — Lauf vorzeitig beendet,[/yellow]"
-                      " nicht weil der Bestand zu Ende war.")
+        console.print("  [yellow]⚠ --max-pages erreicht[/yellow] — offene Vision-Seiten"
+                      " bleiben fuer den naechsten Lauf stehen.")
     for message in report.errors[:10]:
         console.print(f"  [red]✗[/red] {message}")
     console.print()

@@ -151,12 +151,21 @@ def vision_markdown(png: bytes, model: str, call) -> str:
 class PreparedPage:
     """Eine Seite nach dem PDF-Teil der Arbeit.
 
-    Genau eines von `markdown` und `png` ist gesetzt: entweder die Textebene
-    hat gereicht, oder die Seite muss noch ans Modell.
+    Normalerweise ist genau eines von `markdown` und `png` gesetzt: entweder
+    die Textebene hat gereicht, oder die Seite muss noch ans Modell. Sind
+    beide None, braeuchte die Seite einen Vision-Aufruf, durfte ihn aber nicht
+    bekommen (`allow_render=False`, also Budget erschoepft) — siehe
+    `needs_vision`.
     """
     page_no: int
     markdown: str | None = None
     png: bytes | None = None
+
+    @property
+    def needs_vision(self) -> bool:
+        """True, wenn die Seite einen bezahlten Aufruf braucht, aber keinen
+        bekommen hat. Die Seite darf dann nicht als erledigt gelten."""
+        return self.markdown is None and self.png is None
 
 
 def prepare_page(
@@ -165,15 +174,25 @@ def prepare_page(
     threshold: int = DEFAULT_TEXT_THRESHOLD,
     force_vision: bool = False,
     dpi: int = DEFAULT_DPI,
+    allow_render: bool = True,
 ) -> PreparedPage:
     """Der PDF-Teil: Textebene lesen oder rendern. Kein Netzaufruf.
 
     Laeuft im Hauptthread, weil PDFium nicht ohne Weiteres threadsicher ist.
+
+    `allow_render=False` heisst: das Vision-Budget ist alle. Die Textebene
+    wird trotzdem geprueft — sie kostet nichts und soll weiterlaufen —, aber
+    fuer eine Seite, die Vision braeuchte, wird nicht mehr gerendert. Das
+    Rendern ist der teuerste CPU-Teil des Laufs; es fuer Seiten zu erledigen,
+    die anschliessend verworfen werden, waere bei grossen Bestaenden und
+    kleinem Deckel der Loewenanteil der Laufzeit.
     """
     if not force_vision:
         text = extract_text(page)
         if is_text_sufficient(text, threshold):
             return PreparedPage(page_no=page_no, markdown=text.strip() + "\n")
+    if not allow_render:
+        return PreparedPage(page_no=page_no)
     return PreparedPage(page_no=page_no, png=render_page_png(page, dpi=dpi))
 
 
@@ -253,6 +272,10 @@ class IngestReport:
     pages_vision: int = 0
     pages_blank: int = 0
     pages_failed: int = 0
+    # Die Kostenzeile: jeder versuchte Modellaufruf, auch die, die als leere
+    # Seite zurueckkommen oder scheitern. pages_vision zaehlt nur die Aufrufe
+    # mit Ausbeute und ist als Rechnungsgrundlage zu niedrig.
+    vision_calls: int = 0
     capped: bool = False
     errors: list[str] = field(default_factory=list)
 
@@ -346,20 +369,6 @@ def _ingest_one_document(
         report.documents_skipped += 1
         return budget
 
-    if budget is not None:
-        # Budget wird beim VERSUCH abgezogen, nicht erst beim Erfolg — sonst
-        # bewegt sich budget nie, wenn jede Seite scheitert (kaputtes Modell,
-        # 400er auf uebergrossen Bildern), und das naechste Dokument bekommt
-        # wieder das volle Budget. Bis zu documents * max_pages abrechenbare
-        # Aufrufe waeren die Folge.
-        truncated = todo[:max(0, budget)]
-        if len(truncated) < len(todo):
-            report.capped = True
-        todo = truncated
-        budget -= len(todo)
-        if not todo:
-            return budget
-
     slug = document_slug(pdf_path, root)
     title = document_title(pdf, fallback=pdf_path.stem)
     done = set((entry or {}).get("pages_done", []))
@@ -373,13 +382,34 @@ def _ingest_one_document(
         prepared: list[PreparedPage] = []
         for page_no in chunk:
             try:
-                prepared.append(prepare_page(
+                page = prepare_page(
                     pdf[page_no - 1], page_no=page_no, threshold=threshold,
                     force_vision=force_vision, dpi=dpi,
-                ))
+                    allow_render=budget is None or budget > 0,
+                )
             except Exception as exc:
                 report.errors.append(f"{rel_source} Seite {page_no}: {exc}")
                 report.pages_failed += 1
+                continue
+
+            if page.needs_vision:
+                # Budget alle. Die Seite bleibt offen und wird beim naechsten
+                # Lauf nachgeholt; Textseiten weiter hinten laufen trotzdem
+                # durch, weil sie nichts kosten.
+                report.capped = True
+                continue
+
+            if page.png is not None:
+                # Beim VERSUCH abziehen, nicht erst beim Erfolg — sonst bewegt
+                # sich budget nie, wenn jede Seite scheitert (kaputtes Modell,
+                # 400er auf uebergrossen Bildern), und das naechste Dokument
+                # bekommt wieder das volle Budget. Bis zu documents *
+                # max_pages abrechenbare Aufrufe waeren die Folge.
+                report.vision_calls += 1
+                if budget is not None:
+                    budget -= 1
+
+            prepared.append(page)
 
         try:
             # Gefaechert: nur die Netzaufrufe. Seiten mit Textebene reicht

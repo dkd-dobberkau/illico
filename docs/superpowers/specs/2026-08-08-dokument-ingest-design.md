@@ -81,7 +81,7 @@ analog zu `migrate-lang` — und delegiert sofort an `illico_documents.py`.
 | `--model` | `anthropic/claude-sonnet-5` | Modell für die Vision-Extraktion |
 | `--jobs` | 4 | Parallele LLM-Aufrufe |
 | `--fresh` | aus | Extraktions-Cache ignorieren |
-| `--max-pages` | keins | Harte Obergrenze neu **versuchter** Seiten **über den ganzen Lauf**, nicht je Dokument |
+| `--max-pages` | keins | Harte Obergrenze **versuchter Vision-Aufrufe** **über den ganzen Lauf**, nicht je Dokument. Seiten mit Textebene laufen immer durch |
 | `--text-threshold` | 200 | Ab wie vielen Zeichen eine Seite als Textseite gilt |
 | `--force-vision` | aus | Weiche abschalten, jede Seite über Vision |
 
@@ -237,15 +237,33 @@ ist atomar (temp-Datei + `os.replace`, wie `illico_inventory.save_inventory`,
 `illico_distill.DistillStore.put` und `illico_crawl_status.save_crawl_status`)
 — ein Absturz mitten im Schreiben darf die Datei nicht zerreißen.
 
-`--max-pages` zählt dabei **Versuche, nicht Erfolge**: das Budget wird
-abgezogen, sobald eine Seite in einen Lauf geht, nicht erst, wenn sie
-tatsächlich extrahiert wurde. Zöge es nur bei Erfolg ab, bliebe das Budget bei
-einem durchgehend fehlschlagenden Modell (kaputtes `--model`, 400er auf
-übergroßen Bildern) unverändert, und jedes weitere Dokument bekäme erneut das
-volle Budget — bis zu `Dokumente × --max-pages` abrechenbare Aufrufe statt der
-harten Obergrenze. Endet ein Lauf, weil das Budget aufgebraucht ist, meldet er
-das explizit, damit es nicht mit einem regulär durchgearbeiteten Bestand
-verwechselt wird.
+`--max-pages` deckelt **Vision-Aufrufe, nicht Seiten**. Der erste echte Lauf
+(456-seitige Betriebsanleitung, 2026-08-09) hat gezeigt, warum das der
+Unterschied ist, auf den es ankommt: das Budget wurde gegen alle offenen
+Seiten gerechnet, und `--max-pages 5` verbrauchte prompt 2 bezahlte Aufrufe,
+während es vorgab, den Lauf zu begrenzen. Als Schutz vor einem Vision-Sturm
+war der Deckel damit wirkungslos. Seiten mit Textebene laufen deshalb immer
+vollständig durch — sie kosten nichts, und ein Bestand von 456 Seiten ist in
+23 Sekunden gelesen. Ist das Budget alle, wird für eine Seite, die Vision
+bräuchte, nicht einmal mehr gerendert: das Rendern ist der teuerste CPU-Teil,
+und es für Seiten zu erledigen, die anschließend verworfen werden, wäre bei
+großem Bestand und kleinem Deckel der Löwenanteil der Laufzeit.
+
+Gezählt werden **Versuche, nicht Erfolge**: das Budget wird abgezogen, sobald
+eine Seite ans Modell geht, nicht erst, wenn sie tatsächlich extrahiert wurde.
+Zöge es nur bei Erfolg ab, bliebe das Budget bei einem durchgehend
+fehlschlagenden Modell (kaputtes `--model`, 400er auf übergroßen Bildern)
+unverändert, und jedes weitere Dokument bekäme erneut das volle Budget — bis
+zu `Dokumente × --max-pages` abrechenbare Aufrufe statt der harten Obergrenze.
+Bleiben Vision-Seiten wegen des Deckels offen, meldet der Lauf das explizit,
+damit es nicht mit einem regulär durchgearbeiteten Bestand verwechselt wird.
+
+**Die Kostenzeile ist `Vision-Aufrufe`, nicht `Ueber Vision`.** `pages_vision`
+zählt nur Aufrufe mit Ausbeute; Seiten, die das Modell als leer zurückmeldet,
+und Seiten, die scheitern, sind genauso bezahlt. Im ersten echten Lauf gingen
+9 Seiten ans Modell, während die Bilanz 3 auswies — bei Scans mit leeren
+Rückseiten wird diese Lücke größer, nicht kleiner. Der Bericht führt deshalb
+`vision_calls` getrennt und weist es als die bezahlte Menge aus.
 
 **Bewusst nicht gebaut:** kein Per-Seite-Store über Dokumentversionen hinweg.
 Ändert sich ein PDF, werden seine Seiten neu extrahiert. Seitenzahlen können

@@ -119,6 +119,12 @@ Weitere Optionen: `--jobs`, `--fresh`, `--max-pages`, `--text-threshold`
 `--force-vision` (Weiche abschalten, falls der Bestand durchgehend gescannt
 ist).
 
+`--max-pages` deckelt die **Vision-Aufrufe**, nicht die Seiten: Seiten mit
+Textebene laufen immer vollständig durch, weil sie nichts kosten. Die
+Bilanzzeile `Vision-Aufrufe` am Ende des Laufs ist die bezahlte Menge — sie
+liegt über `Ueber Vision`, weil auch Seiten bezahlt sind, die das Modell als
+leer zurückmeldet oder die scheitern.
+
 Ein erneuter Lauf über unveränderte Dateien kostet nichts: Illico merkt sich
 in `_documents.json`, welche PDFs es unter dem jeweiligen `--label` schon
 extrahiert hat. Ändert sich eine Datei, wird sie automatisch neu gelesen;
