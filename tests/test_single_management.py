@@ -198,3 +198,28 @@ def test_export_verlangt_token_wenn_gesetzt(client, monkeypatch):
     monkeypatch.setenv("ILLICO_SINGLE_TOKEN", "geheim")
     r = client.get("/api/export")
     assert r.status_code == 401
+
+
+def test_export_raeumt_bei_fehlschlag_auf(client, tmp_path, monkeypatch):
+    """Schlaegt write_export mitten im Schreiben fehl (volle Platte, unlesbare
+    Datei), darf weder ein Temp-Verzeichnis liegen bleiben noch ein
+    unkontrollierter 500-Stacktrace an den Aufrufer gehen."""
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+    gemerkt = []
+    echtes_mkdtemp = illico_single.tempfile.mkdtemp
+
+    def merkend(*a, **kw):
+        pfad = echtes_mkdtemp(*a, **kw)
+        gemerkt.append(Path(pfad))
+        return pfad
+
+    monkeypatch.setattr(illico_single.tempfile, "mkdtemp", merkend)
+
+    with patch("illico_export.write_export", side_effect=OSError("Platte voll")):
+        r = client.get("/api/export")
+
+    assert r.status_code == 500
+    assert r.status_code != 404, "500 darf nicht mit dem 404 fuer fehlendes Datenverzeichnis verschwimmen"
+    assert gemerkt, "die Route muss ein Temp-Verzeichnis angelegt haben"
+    assert not gemerkt[0].exists(), "das Temp-Verzeichnis darf nach dem Fehlschlag nicht liegen bleiben"

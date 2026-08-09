@@ -175,8 +175,9 @@ def api_job(job_id: str):
 def api_export(chats: bool = True):
     """Liefert das komplette Datenverzeichnis als ZIP.
 
-    Ueber eine Temp-Datei statt aus dem Speicher: der Bedarf bleibt damit
-    konstant, egal wie gross der Bestand geworden ist.
+    Ueber eine Temp-Datei statt aus dem Speicher: der Speicherbedarf bleibt
+    damit konstant, egal wie gross der Bestand geworden ist. Das gilt fuer den
+    Erfolgsfall; Fehlerpfade und abgebrochene Downloads sind unten dokumentiert.
     """
     import illico_app  # lazy: bricht Import-Zyklus (siehe Modulkopf)
     import illico_export
@@ -185,9 +186,33 @@ def api_export(chats: bool = True):
     if not data.is_dir():
         raise HTTPException(404, "Kein Datenverzeichnis")
 
+    # tempfile.mkdtemp() ohne dir= schreibt nach tempfile.gettempdir(); im
+    # Produktiv-Image (siehe Dockerfile) ist das die beschreibbare Container-
+    # Schicht unter /tmp, kein gemountetes Volume. Ein Leck ueberlebt also
+    # keinen Container-Neustart/-Redeploy — das ist eine Rueckfallebene auf
+    # Betriebssystem-/Orchestrierungs-Ebene, keine Garantie innerhalb eines
+    # lange laufenden Prozesses. Sie deckt insbesondere NICHT den Fall ab, dass
+    # ein Client den Download mitten im Stream abbricht: Starlettes
+    # BackgroundTask an FileResponse laeuft laut Quelle nur nach vollstaendig
+    # gesendetem Response-Body, ein Verbindungsabbruch laesst das
+    # Temp-Verzeichnis dann bis zum naechsten Neustart liegen. Ein robusterer
+    # Mechanismus (z.B. Abraeumen beim Prozessstart) ist neuer Funktionsumfang
+    # und bewusst nicht Teil dieser Route.
     verzeichnis = Path(tempfile.mkdtemp(prefix="illico-export-"))
     ziel = verzeichnis / illico_export.default_filename()
-    illico_export.write_export(data, ziel, chats=chats)
+    try:
+        illico_export.write_export(data, ziel, chats=chats)
+    except (OSError, ValueError) as exc:
+        # Gleiche Fehlerklassen wie im CLI-Pfad (illico_export.py::export):
+        # OSError deckt unlesbare Quelldateien und volle Platte ab, ValueError
+        # den (hier eigentlich unerreichbaren) Fall "Ziel liegt im
+        # Datenverzeichnis". Ohne dieses except liefe die Exception ungefangen
+        # durch FastAPI zu einem unkontrollierten 500 UND das Temp-Verzeichnis
+        # bliebe liegen, weil FileResponse (und damit der BackgroundTask fuers
+        # Aufraeumen) nie konstruiert wird. 500 statt 404, damit der Fall nicht
+        # mit "Datenverzeichnis fehlt" verwechselt wird.
+        shutil.rmtree(verzeichnis, ignore_errors=True)
+        raise HTTPException(500, f"Export fehlgeschlagen: {exc}") from exc
 
     headers = {}
     laufend = [f"{j['type']} ({jid})" for jid, j in jobs.items()
