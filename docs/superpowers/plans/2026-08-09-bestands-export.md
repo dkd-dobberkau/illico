@@ -437,10 +437,25 @@ In `pyproject.toml`, Abschnitt `[project.scripts]`, hinter `illico-serve` einfü
 illico-export = "illico_export:app"
 ```
 
-- [ ] **Step 6: Verify the installed command**
+- [ ] **Step 6: Verify the command runs**
 
-Run: `.venv-pub/bin/pip install -e . -q && .venv-pub/bin/illico-export --help`
+Ergänze am Ende von `illico_export.py`, wie in `illico_ingest.py` und
+`illico_compile.py`:
+
+```python
+if __name__ == "__main__":
+    app()
+```
+
+Run: `python illico_export.py --help`
 Expected: Hilfetext mit `--output`, `--data`, `--no-chats`
+
+**Kein `pip install -e .`** — das venv dieses Projekts ist editierbar auf das
+Hauptverzeichnis installiert. Eine Neuinstallation aus dem Worktree würde es
+umhängen und damit auch `illico-ingest`, `illico-compile` und einen laufenden
+Server auf den Worktree-Stand ziehen. Der `[project.scripts]`-Eintrag aus
+Step 5 wird beim nächsten regulären Install wirksam; hier genügt der direkte
+Aufruf.
 
 - [ ] **Step 7: Run the full suite and commit**
 
@@ -706,13 +721,28 @@ async function doExport() {
 Run: `.venv-pub/bin/python -m pytest tests/test_single_frontend.py -q`
 Expected: alle grün
 
-- [ ] **Step 6: Try it in the running app**
+- [ ] **Step 6: Drive the running app**
+
+Port 8000 kann belegt sein (dort läuft eventuell schon eine Instanz), deshalb
+8010. Server starten, Export ziehen, Server beenden:
 
 ```bash
-.venv-pub/bin/illico-serve --port 8000
+python illico_app.py serve --port 8010 > /tmp/export-probe.log 2>&1 &
+SERVER=$!
+sleep 3
+curl -sS -D /tmp/export-header.txt -o /tmp/export-probe.zip \
+  http://127.0.0.1:8010/api/export
+kill $SERVER
+grep -i 'content-type\|content-disposition' /tmp/export-header.txt
+unzip -l /tmp/export-probe.zip | head -5
+rm -f /tmp/export-probe.zip /tmp/export-header.txt /tmp/export-probe.log
 ```
 
-Im Browser `http://localhost:8000` öffnen, den Reiter „Verwalten" aufsuchen, auf „Bestand exportieren" klicken. Erwartet: eine Datei `illico-export-<zeitstempel>.zip` landet im Download-Ordner und lässt sich entpacken. Danach den Server beenden.
+Expected: `content-type: application/zip`, ein `content-disposition` mit
+`illico-export-`, und eine Dateiliste, die mit `illico-data/` beginnt.
+
+Der Knopf selbst wird visuell nicht geprüft — das übernimmt der Controller
+nach Abschluss aller Tasks im Browser.
 
 - [ ] **Step 7: Run the full suite and commit**
 
