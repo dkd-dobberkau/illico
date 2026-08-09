@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from unittest.mock import patch, AsyncMock
 import pytest
 from fastapi import FastAPI
@@ -103,3 +104,97 @@ def test_jobs_polling(client, monkeypatch):
     r2 = client.get("/api/jobs/job-1")
     assert r2.json()["output"] == "log"           # Detail mit output
     assert client.get("/api/jobs/fehlt").status_code == 404
+
+
+import zipfile
+import io
+
+
+def _bestand_anlegen(data):
+    (data / "raw").mkdir(parents=True, exist_ok=True)
+    (data / "raw" / "s1.md").write_text("Seite", encoding="utf-8")
+    (data / "chats" / "single").mkdir(parents=True, exist_ok=True)
+    (data / "chats" / "single" / "c1.json").write_text("{}", encoding="utf-8")
+
+
+def test_export_liefert_ein_zip(client, tmp_path, monkeypatch):
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+
+    r = client.get("/api/export")
+
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert "illico-export-" in r.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        assert "illico-data/raw/s1.md" in z.namelist()
+
+
+def test_export_ohne_chats(client, tmp_path, monkeypatch):
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+
+    r = client.get("/api/export?chats=false")
+
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        assert not [n for n in z.namelist() if "/chats/" in n]
+
+
+def test_export_raeumt_die_temp_datei_ab(client, tmp_path, monkeypatch):
+    """Sonst fuellt jeder Download die Platte des Servers."""
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+    gemerkt = []
+    echtes_mkdtemp = illico_single.tempfile.mkdtemp
+
+    def merkend(*a, **kw):
+        pfad = echtes_mkdtemp(*a, **kw)
+        gemerkt.append(Path(pfad))
+        return pfad
+
+    monkeypatch.setattr(illico_single.tempfile, "mkdtemp", merkend)
+
+    r = client.get("/api/export")
+
+    assert r.status_code == 200
+    assert gemerkt, "die Route muss ein Temp-Verzeichnis angelegt haben"
+    assert not gemerkt[0].exists(), "das Temp-Verzeichnis muss nach dem Senden weg sein"
+
+
+def test_export_warnt_bei_laufendem_job(client, tmp_path, monkeypatch):
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+    illico_single.jobs.clear()
+    illico_single._new_job("compile-1", "compile")
+
+    r = client.get("/api/export")
+
+    illico_single.jobs.clear()
+    assert "x-illico-warning" in r.headers
+    assert "compile" in r.headers["x-illico-warning"]
+
+
+def test_export_ohne_job_ohne_warnung(client, tmp_path, monkeypatch):
+    """Eine Dauerwarnung wird ueberlesen."""
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    _bestand_anlegen(tmp_path)
+    illico_single.jobs.clear()
+
+    r = client.get("/api/export")
+
+    assert "x-illico-warning" not in r.headers
+
+
+def test_export_ohne_datenverzeichnis_404(client, tmp_path, monkeypatch):
+    monkeypatch.delenv("ILLICO_SINGLE_TOKEN", raising=False)
+    monkeypatch.setattr("illico_app.DATA_DIR", tmp_path / "gibt-es-nicht")
+
+    r = client.get("/api/export")
+
+    assert r.status_code == 404
+
+
+def test_export_verlangt_token_wenn_gesetzt(client, monkeypatch):
+    monkeypatch.setenv("ILLICO_SINGLE_TOKEN", "geheim")
+    r = client.get("/api/export")
+    assert r.status_code == 401

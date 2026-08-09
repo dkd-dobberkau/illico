@@ -8,11 +8,16 @@ gegen das eine `wiki/` (kein Tenant). Job-Runner = eigene, kleine Plumbing
 import asyncio
 import os
 import secrets
+import shutil
 import sys
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 import illico_llm
 
@@ -164,3 +169,42 @@ def api_job(job_id: str):
     if job_id not in jobs:
         raise HTTPException(404, "Job nicht gefunden")
     return jobs[job_id]
+
+
+@single_management_router.get("/api/export")
+def api_export(chats: bool = True):
+    """Liefert das komplette Datenverzeichnis als ZIP.
+
+    Ueber eine Temp-Datei statt aus dem Speicher: der Bedarf bleibt damit
+    konstant, egal wie gross der Bestand geworden ist.
+    """
+    import illico_app  # lazy: bricht Import-Zyklus (siehe Modulkopf)
+    import illico_export
+
+    data = illico_app.DATA_DIR
+    if not data.is_dir():
+        raise HTTPException(404, "Kein Datenverzeichnis")
+
+    verzeichnis = Path(tempfile.mkdtemp(prefix="illico-export-"))
+    ziel = verzeichnis / illico_export.default_filename()
+    illico_export.write_export(data, ziel, chats=chats)
+
+    headers = {}
+    laufend = [f"{j['type']} ({jid})" for jid, j in jobs.items()
+               if j.get("status") == "running"]
+    if laufend:
+        # Der Rumpf ist ein ZIP-Datenstrom und kann keinen Hinweis tragen; das
+        # Frontend liest diesen Header aus. Nur setzen, wenn wirklich ein Job
+        # laeuft — eine Dauerwarnung wird ueberlesen.
+        # HTTP-Header muessen Latin-1-kodierbar sein (siehe RFC 7230) — deshalb
+        # hier ein einfacher Bindestrich statt Halbgeviertstrich, sonst wirft
+        # Starlette beim Bauen der Response einen UnicodeEncodeError.
+        headers["X-Illico-Warning"] = (
+            "Laufender Job: " + ", ".join(laufend)
+            + " - das Archiv ist moeglicherweise kein konsistenter Snapshot."
+        )
+
+    return FileResponse(
+        ziel, media_type="application/zip", filename=ziel.name, headers=headers,
+        background=BackgroundTask(shutil.rmtree, verzeichnis, ignore_errors=True),
+    )
