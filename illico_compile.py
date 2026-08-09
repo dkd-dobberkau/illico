@@ -1004,6 +1004,34 @@ def _set_frontmatter_line(text: str, pattern: re.Pattern, line: str) -> str:
     return text[:opener_end] + line + "\n" + text[opener_end:]
 
 
+def _normalisiere_frontmatter_zaun(text: str) -> str:
+    """Macht aus einem ```yaml-Kopf echtes Frontmatter.
+
+    Das Modell liefert den Kopf mal als Frontmatter, mal als Code-Block — im
+    ersten echten Lauf traf Letzteres 9 von 20 Artikeln. Das Ergebnis ist
+    weder gueltiges Frontmatter noch ein geschlossener Code-Block: der Kopf
+    steht sichtbar im gerenderten Artikel, und alles, was YAML-Frontmatter
+    erwartet, findet keins.
+
+    Drei Varianten kamen real vor: ```yaml mit `---` als Schluss, ```yaml mit
+    einem zweiten `---` direkt darunter, und ```yaml mit ``` als Schluss.
+    """
+    if not text.startswith("```yaml"):
+        return text
+
+    zeilen = text.split("\n")
+    zeilen[0] = "---"
+    # ```yaml mit eigenem --- darunter: sonst stuende der Opener doppelt da
+    if len(zeilen) > 1 and zeilen[1].strip() == "---":
+        del zeilen[1]
+    # Schluss des Kopfes: ``` waere ein Code-Zaun ohne Anfang
+    for i in range(1, len(zeilen)):
+        if zeilen[i].strip() in ("---", "```"):
+            zeilen[i] = "---"
+            break
+    return "\n".join(zeilen)
+
+
 def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
     """Garantiert Frontmatter und setzt `sources` und `compiled` IMMER selbst.
 
@@ -1020,9 +1048,9 @@ def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[
     """
     sources_yaml = json.dumps(sorted(source_files), ensure_ascii=False)
     today = datetime.now().strftime("%Y-%m-%d")
-    text = content.lstrip()
+    text = _normalisiere_frontmatter_zaun(content.lstrip())
 
-    if text.startswith("---") or text.startswith("```yaml"):
+    if text.startswith("---"):
         text = _set_frontmatter_line(text, _SOURCES_LINE, f"sources: {sources_yaml}")
         return _set_frontmatter_line(text, _COMPILED_LINE, f'compiled: "{today}"')
 

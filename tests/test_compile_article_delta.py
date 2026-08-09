@@ -329,3 +329,62 @@ def test_geschriebener_artikel_traegt_das_systemdatum(tmp_path: Path):
     assert "2024-01-15" not in geschrieben, (
         f"das erfundene Datum darf nicht auf Platte landen: {geschrieben!r}"
     )
+
+
+def test_frontmatter_als_codeblock_wird_zu_echtem_frontmatter():
+    """Das Modell liefert den Kopf gelegentlich als ```yaml-Block statt als
+    Frontmatter. Im echten Lauf vom 2026-08-09 traf das 9 von 20 Artikeln.
+    Ergebnis: weder gueltiges Frontmatter noch ein geschlossener Code-Block —
+    der Kopf erscheint sichtbar im gerenderten Artikel, und alles, was YAML-
+    Frontmatter erwartet (Obsidian, statische Generatoren), findet keines.
+    """
+    out = _ensure_frontmatter(
+        '```yaml\ntitle: "X"\nsources: ["alt.md"]\n---\n\n## Inhalt\n',
+        "slug", "Titel", ["ordner/neu.md"],
+    )
+    assert out.startswith("---\n"), f"Opener muss --- sein: {out[:40]!r}"
+    assert "```yaml" not in out, f"Code-Zaun ueberlebt: {out[:60]!r}"
+    assert "ordner/neu.md" in out
+
+
+def test_doppelter_opener_wird_nicht_verdoppelt():
+    """Variante aus dem echten Lauf: ```yaml und darunter noch ein ---."""
+    out = _ensure_frontmatter(
+        '```yaml\n---\ntitle: "X"\nsources: ["alt.md"]\n---\n\n## Inhalt\n',
+        "slug", "Titel", ["ordner/neu.md"],
+    )
+    assert out.startswith("---\n")
+    assert "```yaml" not in out
+    assert not out.startswith("---\n---"), f"doppelter Opener: {out[:30]!r}"
+    kopf_ende = out.index("\n---", 4)
+    assert "title:" in out[:kopf_ende], "der Kopf darf nicht leer werden"
+
+
+def test_schliessender_codezaun_wird_zu_dreistrich():
+    """Variante aus dem echten Lauf: ```yaml oben, ``` unten — beide Fences."""
+    out = _ensure_frontmatter(
+        '```yaml\ntitle: "X"\nsources: ["alt.md"]\n```\n\n## Inhalt\n',
+        "slug", "Titel", ["ordner/neu.md"],
+    )
+    assert out.startswith("---\n")
+    assert "```" not in out, f"Code-Zaun ueberlebt irgendwo: {out!r}"
+    assert out.count("---") >= 2, "Frontmatter braucht Anfang und Ende"
+    assert "## Inhalt" in out
+
+
+def test_gueltiges_frontmatter_bleibt_unangetastet():
+    """Die 11 gesunden Artikel duerfen von der Reparatur nichts merken.
+
+    Auf die Reihenfolge der Felder kommt es nicht an — `compiled` landet beim
+    Nachtragen direkt hinter dem Opener, und YAML ist das gleichgueltig. Was
+    zaehlt: genau ein Opener, genau ein Schluss, alle Felder da.
+    """
+    out = _ensure_frontmatter(
+        '---\ntitle: "X"\nsources: ["alt.md"]\n---\n\n## Inhalt\n',
+        "slug", "Titel", ["ordner/neu.md"],
+    )
+    assert out.startswith("---\n")
+    assert "```" not in out
+    assert out.count("\n---") == 1, f"kein zusaetzlicher Trenner: {out!r}"
+    for feld in ('title: "X"', "ordner/neu.md", "compiled:"):
+        assert feld in out, f"{feld} fehlt: {out!r}"
