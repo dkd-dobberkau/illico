@@ -577,6 +577,10 @@
         <button class="action-btn" onclick="doCompile(true)">✓ Nur Lint</button>
         <button class="action-btn" onclick="doGraphRebuild()">◈ Graph neu</button>
       </div>
+      <button class="action-btn" onclick="doExport()">⤓ Bestand exportieren</button>
+      <label style="display:block;margin-top:6px;font-size:0.85em;">
+        <input type="checkbox" id="export-chats" checked> Chatverläufe einschließen
+      </label>
     </div>
 
     <div class="panel-section" id="manage-domains-section" style="display:none;">
@@ -1106,6 +1110,27 @@ async function doGraphRebuild() {
     showToast('Graph-Rebuild gestartet');
     trackJob(data.job_id);
   } catch (e) { showToast('Graph-Rebuild fehlgeschlagen'); }
+}
+
+async function doExport() {
+  const chats = document.getElementById('export-chats').checked;
+  try {
+    // fetch + Blob statt <a href>: nur so geht der Authorization-Header mit,
+    // sonst endet der Download bei gesetztem Token in einem 401.
+    const r = await fetch('/api/export?chats=' + (chats ? 'true' : 'false'),
+                          { headers: authHeaders({}) });
+    if (!r.ok) { showToast(r.status === 401 ? 'Token erforderlich' : 'Export fehlgeschlagen'); return; }
+    const warnung = r.headers.get('X-Illico-Warning');
+    const blob = await r.blob();
+    const name = (r.headers.get('Content-Disposition') || '').match(/filename="?([^";]+)"?/)?.[1]
+                 || 'illico-export.zip';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    showToast(warnung ? 'Export geladen — ' + warnung : 'Export geladen');
+  } catch (e) { showToast('Export fehlgeschlagen'); }
 }
 
 function trackJob(jobId) {

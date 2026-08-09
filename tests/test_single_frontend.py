@@ -21,8 +21,16 @@ def test_kein_saas_leak():
 
 
 def test_ruft_kern_und_single_endpoints():
-    for ep in ("/api/stats", "/api/articles", "/api/chat", "/api/ingest", "/api/compile"):
+    for ep in ("/api/stats", "/api/articles", "/api/chat", "/api/ingest", "/api/compile", "/api/export"):
         assert ep in HTML, f"Endpoint {ep} fehlt im Frontend"
+
+
+def test_export_laedt_per_blob_nicht_per_link():
+    """Ein <a href> schickt den Authorization-Header nicht mit. Bei gesetztem
+    ILLICO_SINGLE_TOKEN liefe der Download sonst in ein 401, das der Nutzer
+    nur als kaputte Datei sieht."""
+    assert "/api/export" in HTML
+    assert "createObjectURL" in HTML
 
 
 def test_core_serves_single_frontend():
