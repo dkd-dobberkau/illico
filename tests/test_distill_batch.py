@@ -272,3 +272,68 @@ def test_fehlende_seite_in_der_antwort_wird_benannt(tmp_path: Path):
     assert ".md" in result.errors[0], (
         f"die Meldung muss die Seite benennen: {result.errors[0]!r}"
     )
+
+
+class _TruncatingCall:
+    """Antwortet nur fuer die ersten `grenze` Seiten eines Batches — so
+    verhaelt sich ein an max_tokens abgeschnittenes JSON. Kleinere Batches
+    gehen vollstaendig durch.
+    """
+
+    def __init__(self, grenze: int = 6):
+        self.grenze = grenze
+        self.calls = 0
+        self.batch_groessen: list[int] = []
+
+    def __call__(self, prompt: str, model: str, max_tokens: int = 2000) -> str:
+        self.calls += 1
+        ids = [line.split()[2] for line in prompt.splitlines() if line.startswith("### PAGE ")]
+        self.batch_groessen.append(len(ids))
+        return _response_for([{"id": i} for i in ids[:self.grenze]])
+
+
+def test_abgeschnittene_antwort_wird_in_kleineren_batches_nachgeholt(tmp_path: Path):
+    """Dritter Compile-Lauf ueber 450 Seiten (2026-08-09): die Seiten 350-353
+    meldeten "fehlt in der Modellantwort". Bei batch_size=15 und
+    max_tokens=8192 reisst das Destillat-JSON hinten ab, und es fallen immer
+    die letzten Seiten eines Batches weg — deterministisch. Der naechste Lauf
+    baut denselben Batch und reisst an derselben Stelle ab, die Zusage "der
+    naechste Lauf versucht sie erneut" wird also nie eingeloest.
+
+    Mit weniger Seiten pro Aufruf passt das JSON. Der Batch muss sich deshalb
+    selbst halbieren, statt die Seiten liegen zu lassen.
+    """
+    raw = {f"s{i:02d}.md": _page(f"T{i}", f"Body {i}") for i in range(10)}
+    store = DistillStore(tmp_path / "d")
+    call = _TruncatingCall(grenze=6)
+
+    result = distill_all(raw, store, "test-model", _PROMPT, call, jobs=1, batch_size=10)
+
+    assert result.failed == [], (
+        f"abgeschnittene Seiten muessen in kleineren Batches nachkommen "
+        f"(offen: {len(result.failed)}, Batch-Groessen: {call.batch_groessen})"
+    )
+    assert len(result.distillates) == 10
+    assert max(call.batch_groessen[1:], default=0) < 10, (
+        "der Nachschlag muss kleiner sein als der gescheiterte Batch, sonst "
+        f"reisst er an derselben Stelle ab: {call.batch_groessen}"
+    )
+
+
+def test_leere_antwort_loest_keinen_nachschlag_aus(tmp_path: Path):
+    """Kostenschutz: kommt keine einzige Seite durch, ist die Antwort nicht
+    abgeschnitten, sondern der Aufruf als Ganzes unbrauchbar. Ein Nachschlag
+    mit halbierten Batches wuerde den Fehlschlag nur vervielfachen — aus einem
+    bezahlten Aufruf wuerden bei batch_size=15 schnell ein Dutzend.
+    """
+    raw = {f"s{i}.md": _page(f"T{i}", f"Body {i}") for i in range(4)}
+    store = DistillStore(tmp_path / "d")
+    call = _TruncatingCall(grenze=0)   # nie eine Seite in der Antwort
+
+    result = distill_all(raw, store, "test-model", _PROMPT, call, jobs=1, batch_size=4)
+
+    assert len(result.failed) == 4
+    assert call.calls == 1, (
+        f"ohne eine einzige geglueckte Seite darf nicht nachgereicht werden "
+        f"(war: {call.calls} Aufrufe)"
+    )

@@ -170,17 +170,12 @@ def _distill_batch(batch, model, prompt, call) -> tuple[dict, list, list]:
         ]
 
     made: dict[str, dict] = {}
-    failed: list[str] = []
-    errors: list[str] = []
+    fehlend: list[dict] = []
     now = datetime.now().isoformat(timespec="seconds")
     for index, page in enumerate(batch):
         item = parsed.get(f"p{index}")
         if not item:
-            failed.append(page["hash"])
-            errors.append(
-                f"{_batch_sources([page])}: fehlt in der Modellantwort "
-                "(moeglicherweise abgeschnitten)"
-            )
+            fehlend.append(page)
             continue
         made[page["hash"]] = {
             "schema": SCHEMA,
@@ -196,7 +191,44 @@ def _distill_batch(batch, model, prompt, call) -> tuple[dict, list, list]:
             "model": model,
             "created": now,
         }
-    return made, failed, errors
+
+    if not fehlend:
+        return made, [], []
+
+    # Kam ein Teil durch und der Rest nicht, ist die Antwort mit grosser
+    # Wahrscheinlichkeit an max_tokens abgeschnitten: das JSON reisst hinten
+    # ab, und es fehlen immer die letzten Seiten des Batches. Derselbe Batch
+    # reisst im naechsten Lauf an derselben Stelle ab — ohne Nachschlag kommen
+    # diese Seiten nie. Mit weniger Seiten pro Aufruf passt das JSON.
+    #
+    # Kam dagegen keine einzige Seite durch, ist nicht die Antwort zu lang,
+    # sondern der Aufruf unbrauchbar. Ein Nachschlag wuerde den Fehlschlag nur
+    # vervielfachen, statt ihn zu beheben — deshalb nur bei `made`.
+    #
+    # Die Halbierung terminiert bei einer Einzelseite. Schlimmstenfalls
+    # (jeder Aufruf liefert genau eine Seite) kostet ein Batch von n Seiten
+    # O(n log n) Aufrufe statt einem; im erwarteten Fall — die meisten Seiten
+    # kommen durch, ein paar fehlen — sind es ein bis zwei zusaetzliche.
+    if made and len(batch) > 1:
+        mitte = max(1, len(fehlend) // 2)
+        failed: list[str] = []
+        errors: list[str] = []
+        for teil in (fehlend[:mitte], fehlend[mitte:]):
+            if not teil:
+                continue
+            teil_made, teil_failed, teil_errors = _distill_batch(
+                teil, model, prompt, call
+            )
+            made.update(teil_made)
+            failed.extend(teil_failed)
+            errors.extend(teil_errors)
+        return made, failed, errors
+
+    return made, [page["hash"] for page in fehlend], [
+        f"{_batch_sources([page])}: fehlt in der Modellantwort "
+        "(moeglicherweise abgeschnitten)"
+        for page in fehlend
+    ]
 
 
 def distill_all(
