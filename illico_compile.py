@@ -193,7 +193,6 @@ Format:
 title: "Titel"
 sources: ["datei1.md", "datei2.md"]
 related: ["slug1.md", "slug2.md"]
-compiled: "DATUM"
 ---
 
 ## Inhalt hier...
@@ -387,7 +386,6 @@ Format:
 title: "Title"
 sources: ["file1.md", "file2.md"]
 related: ["slug1.md", "slug2.md"]
-compiled: "DATE"
 ---
 
 ## Content here...
@@ -990,28 +988,45 @@ def phase_graph(
 
 
 _SOURCES_LINE = re.compile(r"^sources:.*$", re.MULTILINE)
+_COMPILED_LINE = re.compile(r"^compiled:.*$", re.MULTILINE)
+
+
+def _set_frontmatter_line(text: str, pattern: re.Pattern, line: str) -> str:
+    """Ersetzt eine Frontmatter-Zeile oder fuegt sie nach dem Opener ein.
+
+    Das Replacement geht als Funktion in `sub`, nicht als String: `re.sub`
+    deutet sonst `\\1`, `\\g` und Konsorten im Ersatztext, und der besteht hier
+    aus Datei-Pfaden, die niemand darauf geprueft hat.
+    """
+    if pattern.search(text):
+        return pattern.sub(lambda _: line, text, count=1)
+    opener_end = text.index("\n") + 1
+    return text[:opener_end] + line + "\n" + text[opener_end:]
 
 
 def _ensure_frontmatter(content: str, slug: str, title: str, source_files: list[str]) -> str:
-    """Garantiert Frontmatter und setzt `sources` IMMER selbst.
+    """Garantiert Frontmatter und setzt `sources` und `compiled` IMMER selbst.
 
     Frueher durfte das LLM die sources schreiben — es kuerzte dabei Pfade auf
     Dateinamen (`unterordner/aktuelles.md` → `aktuelles.md`), was dem
     Cloud-Overlay die Domain-Zuordnung zerschoss. Die Quellen sind bekannt,
     also werden sie programmatisch gesetzt statt erraten.
+
+    Fuer `compiled` gilt dasselbe, und aus demselben Grund: das Modell hat das
+    Datum frei erfunden (im ersten echten Lauf trugen zwei Drittel der Artikel
+    Daten zwischen 2024-01-15 und 2025-08-09), weil der Prompt ein
+    Frontmatter-Beispiel zeigt. Wer wissen will, wie alt ein Artikel ist,
+    bekommt sonst Fiktion.
     """
     sources_yaml = json.dumps(sorted(source_files), ensure_ascii=False)
+    today = datetime.now().strftime("%Y-%m-%d")
     text = content.lstrip()
 
     if text.startswith("---") or text.startswith("```yaml"):
-        if _SOURCES_LINE.search(text):
-            return _SOURCES_LINE.sub(f"sources: {sources_yaml}", text, count=1)
-        # Frontmatter ohne sources: direkt nach dem Opener einfuegen.
-        opener_end = text.index("\n") + 1
-        return text[:opener_end] + f"sources: {sources_yaml}\n" + text[opener_end:]
+        text = _set_frontmatter_line(text, _SOURCES_LINE, f"sources: {sources_yaml}")
+        return _set_frontmatter_line(text, _COMPILED_LINE, f'compiled: "{today}"')
 
     title_yaml = json.dumps(title, ensure_ascii=False)
-    today = datetime.now().strftime("%Y-%m-%d")
     injected = (
         f'---\ntitle: {title_yaml}\nsources: {sources_yaml}\ncompiled: "{today}"\n---\n\n'
     )

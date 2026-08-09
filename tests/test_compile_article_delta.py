@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 from illico_compile import _ensure_frontmatter, get_prompts, phase_articles
@@ -156,6 +157,35 @@ def test_ensure_frontmatter_still_injects_when_missing():
     assert "a/b.md" in out
 
 
+def test_ensure_frontmatter_ueberschreibt_erfundenes_compiled_datum():
+    """Erster echter Compile-Lauf (2026-08-09): zwei Drittel der Artikel trugen
+    Fantasiedaten zwischen 2024-01-15 und 2025-08-09. Liefert das Modell
+    eigenes Frontmatter, wurde bisher nur `sources:` ersetzt und `compiled:`
+    blieb stehen, wie das Modell es erfunden hatte — der Destillations-Prompt
+    zeigt `compiled: "DATUM"` und laedt genau dazu ein. Dasselbe Argument wie
+    bei `sources`: das Datum ist bekannt, es wird gesetzt und nicht geraten.
+    """
+    heute = datetime.now().strftime("%Y-%m-%d")
+    out = _ensure_frontmatter(
+        '---\ntitle: "X"\nsources: ["kurz.md"]\ncompiled: "2024-01-15"\n---\n\nText\n',
+        "slug", "Titel", ["ordner/lang.md"],
+    )
+    assert f'compiled: "{heute}"' in out, f"Systemdatum fehlt: {out!r}"
+    assert "2024-01-15" not in out, f"erfundenes Datum ueberlebt: {out!r}"
+
+
+def test_ensure_frontmatter_ergaenzt_fehlendes_compiled_datum():
+    """Frontmatter ohne `compiled:` darf nicht ohne Datum durchrutschen —
+    sonst hat ein Teil der Artikel das Feld und ein Teil nicht.
+    """
+    heute = datetime.now().strftime("%Y-%m-%d")
+    out = _ensure_frontmatter(
+        '---\ntitle: "X"\nsources: ["kurz.md"]\n---\n\nText\n',
+        "slug", "Titel", ["ordner/lang.md"],
+    )
+    assert f'compiled: "{heute}"' in out, f"Datum wurde nicht ergaenzt: {out!r}"
+
+
 def _distillates_lang(lang: str):
     return {"sha256:1": {"hash": "sha256:1", "title": "T", "summary": "S",
                          "keypoints": [], "entities": [], "edges": [],
@@ -265,3 +295,37 @@ def test_removed_orphans_count_as_a_change(tmp_path: Path):
 
     assert changed  # nicht leer → Index und Lint laufen
     assert not (wiki / "wieder-verwaist.md").exists()
+
+
+def test_geschriebener_artikel_traegt_das_systemdatum(tmp_path: Path):
+    """Die Verdrahtung, nicht nur die Funktion: liefert das Modell ein
+    komplettes Frontmatter samt erfundenem `compiled:`, muss die auf Platte
+    geschriebene Datei trotzdem das Systemdatum tragen.
+
+    Der Unit-Test auf `_ensure_frontmatter` allein genuegt hier nicht — im
+    echten Lauf vom 2026-08-09 war die Funktion korrekt aufgerufen worden und
+    das Datum stand trotzdem falsch in den Artikeln, weil nur `sources:`
+    ersetzt wurde. Dieser Test prueft das Ergebnis dort, wo der Nutzer es
+    sieht: in der Datei.
+    """
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    inv = {"schema": 1, "clusters": [_cluster("a", ["sha256:1"])]}
+
+    def erfindet_datum(prompt, model, max_tokens=2000):
+        return (
+            '---\ntitle: "Erfunden"\nsources: ["falsch.md"]\n'
+            'compiled: "2024-01-15"\n---\n\n# Artikel\n\nText.\n'
+        )
+
+    phase_articles(_distillates_lang("de"), inv, {"clusters": []},
+                   wiki, "m", get_prompts("de"), erfindet_datum, jobs=1)
+
+    geschrieben = (wiki / "a.md").read_text(encoding="utf-8")
+    heute = datetime.now().strftime("%Y-%m-%d")
+    assert f'compiled: "{heute}"' in geschrieben, (
+        f"die geschriebene Datei muss das Systemdatum tragen: {geschrieben!r}"
+    )
+    assert "2024-01-15" not in geschrieben, (
+        f"das erfundene Datum darf nicht auf Platte landen: {geschrieben!r}"
+    )
