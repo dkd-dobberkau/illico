@@ -11,6 +11,7 @@ distill-de/ und kuenftige Verzeichnisse still liegen.
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import os
 import zipfile
 
 ARCHIVE_ROOT = "illico-data"
@@ -46,37 +47,34 @@ def _ausgeschlossen(path: Path, data: Path, chats: bool) -> bool:
 
 
 def _ziel_in_data(ziel: Path, data: Path) -> bool:
-    """Prueft, ob ziel im Datenverzeichnis liegt.
+    """Prueft, ob ziel im Datenverzeichnis data liegt.
 
-    Nutzt case-sensitiven Vergleich als Primärlogik (funktioniert auf Linux),
-    mit case-insensitivem Fallback für APFS (macOS).
+    Ein Vergleich von Pfad-Zeichenketten muesste raten, ob das Dateisystem
+    Gross-/Kleinschreibung unterscheidet — und raet auf einer der beiden
+    Zielplattformen zwangslaeufig falsch: Linux (Produktivumgebung laut
+    Dockerfile) ist case-sensitiv, APFS (macOS) case-insensitiv aber
+    case-preserving. Sogar `Path.resolve()` normalisiert die Schreibweise
+    auf APFS nicht auf die tatsaechliche Gross-/Kleinschreibung.
+
+    Deshalb wird stattdessen das Dateisystem selbst befragt. ziel existiert
+    beim Aufruf noch nicht, aber sein naechster tatsaechlich existierender
+    Vorfahre schon — sein Elternverzeichnis, oder, falls das auch noch
+    fehlt, dessen Elternverzeichnis usw. Dessen Identitaet (Geraet + Inode,
+    ueber os.path.samefile) wird mit data verglichen: das beantwortet
+    "ist das dasselbe Verzeichnis?" unabhaengig von der Schreibweise korrekt,
+    weil das Betriebssystem selbst entscheidet statt eine Namensregel.
     """
-    ziel_resolved = ziel.resolve()
-    data_resolved = data.resolve()
+    vorfahr = ziel.parent
+    while not vorfahr.exists():
+        eltern = vorfahr.parent
+        if eltern == vorfahr:
+            return False  # Dateisystem-Wurzel erreicht, kein Treffer
+        vorfahr = eltern
 
-    # Schritt 1: Case-sensitiver Vergleich (primär, funktioniert auf Linux)
-    # is_relative_to() ist die zuverlässigste Methode auf case-sensitiven Systemen
-    try:
-        ziel_resolved.relative_to(data_resolved)
-        return True
-    except ValueError:
-        pass
-
-    # Schritt 2: Fallback zu case-insensitivem Vergleich für APFS
-    # Nur wenn der case-sensitive Vergleich fehlgeschlagen ist.
-    # Dies ist defensiv: nur nötig auf Systemen, wo case-insensitivity auftritt.
-    ziel_parts = ziel_resolved.parts
-    data_parts = data_resolved.parts
-
-    if len(ziel_parts) < len(data_parts):
-        return False
-
-    # Vergleiche die ersten len(data_parts) Komponenten case-insensitiv
-    for zp, dp in zip(ziel_parts[:len(data_parts)], data_parts):
-        if zp.lower() != dp.lower():
-            return False
-
-    return True
+    for kandidat in (vorfahr, *vorfahr.parents):
+        if os.path.samefile(kandidat, data):
+            return True
+    return False
 
 
 def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:

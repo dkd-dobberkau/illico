@@ -117,19 +117,24 @@ def test_default_filename_traegt_datum_und_uhrzeit():
 
 
 def test_ziel_im_datenverzeichnis_mit_unterschiedlicher_schreibweise(tmp_path: Path):
-    """Case-insensitivity: Ziel wird abgelehnt auch bei abweichender Schreibweise.
+    """Ziel wird abgelehnt, wenn es ueber eine andere Schreibweise auf dasselbe
+    Verzeichnis verweist wie data.
 
-    Auf case-insensitiven Filesystemen (APFS, NTFS) koennen Ziel und Data
-    unterschiedliche Schreibweisen haben und trotzdem auf das gleiche
-    Verzeichnis verweisen. Der Containment-Check muss das erkennen.
+    Ob das zutreffen kann, haengt vom Dateisystem ab (APFS: ja, ext4: nein) -
+    deshalb wird das hier festgestellt statt vom Betriebssystem-Namen
+    vermutet: existiert der andersgeschriebene Pfad bereits, nachdem nur die
+    Originalschreibweise angelegt wurde, ist das Dateisystem case-insensitiv
+    und der Test aussagekraeftig. Andernfalls ist er hier gegenstandslos -
+    dann prueft der Gegenstueck-Test unten die tatsaechliche Wahrheit.
     """
     data = tmp_path / "TestData"
     data.mkdir()
 
-    # Auf APFS: testdata und TestData verweisen auf das gleiche Verzeichnis
-    # Der Pfad existiert noch nicht (ziel wird erst geschrieben),
-    # aber der Containment-Check soll das erkennen
-    ziel = tmp_path / "testdata" / "export.zip"  # lowercase testdata
+    andere_schreibweise = tmp_path / "testdata"
+    if not andere_schreibweise.exists():
+        pytest.skip("Case-sensitives Dateisystem erkannt")
+
+    ziel = andere_schreibweise / "export.zip"
 
     with pytest.raises(ValueError):
         illico_export.write_export(data, ziel)
