@@ -167,6 +167,11 @@ Ein Export während eines laufenden `ingest` oder `compile` ist kein
 konsistenter Snapshot. Das Web-Interface warnt in dem Fall; die CLI läuft in
 einem eigenen Prozess und kennt die Jobs des Servers nicht.
 
+**Hinweis:** `/api/export` ist der erste Endpunkt, der lesenden Zugriff auf
+den *gesamten* Bestand freigibt — bisher sicherte `ILLICO_SINGLE_TOKEN` nur
+Aktionen ab (`ingest`, `compile`, Rohdaten löschen). Ohne gesetzten Token ist
+der Export offen, und das Docker-Image bindet standardmäßig auf `0.0.0.0`.
+
 ### Mehrsprachige Wikis
 
 `--lang` filtert die Rohseiten nach Sprache (Frontmatter `language:`, Fallback

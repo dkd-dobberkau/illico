@@ -161,6 +161,11 @@ An export taken while `ingest` or `compile` is running is not a consistent
 snapshot. The web interface warns about this; the CLI runs in its own process
 and does not know about the server's jobs.
 
+**Note:** `/api/export` is the first endpoint that grants read access to the
+*entire* collection — until now `ILLICO_SINGLE_TOKEN` only guarded actions
+(`ingest`, `compile`, deleting raw data). Without a token set, the export is
+open, and the Docker image binds to `0.0.0.0` by default.
+
 ### Multilingual wikis
 
 `--lang` filters the raw pages by language (frontmatter `language:`, falling back

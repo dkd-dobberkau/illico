@@ -136,8 +136,11 @@ def test_export_ohne_chats(client, tmp_path, monkeypatch):
 
     r = client.get("/api/export?chats=false")
 
+    assert r.status_code == 200
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
-        assert not [n for n in z.namelist() if "/chats/" in n]
+        namen = z.namelist()
+        assert not [n for n in namen if "/chats/" in n]
+        assert "illico-data/raw/s1.md" in namen, "der Rest muss unangetastet bleiben"
 
 
 def test_export_raeumt_die_temp_datei_ab(client, tmp_path, monkeypatch):
@@ -219,7 +222,7 @@ def test_export_raeumt_bei_fehlschlag_auf(client, tmp_path, monkeypatch):
     with patch("illico_export.write_export", side_effect=OSError("Platte voll")):
         r = client.get("/api/export")
 
+    # 500, nicht 404 — der Fall darf nicht mit "Datenverzeichnis fehlt" verschwimmen.
     assert r.status_code == 500
-    assert r.status_code != 404, "500 darf nicht mit dem 404 fuer fehlendes Datenverzeichnis verschwimmen"
     assert gemerkt, "die Route muss ein Temp-Verzeichnis angelegt haben"
     assert not gemerkt[0].exists(), "das Temp-Verzeichnis darf nach dem Fehlschlag nicht liegen bleiben"

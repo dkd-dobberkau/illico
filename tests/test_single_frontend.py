@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from fastapi.testclient import TestClient
 import illico_app
@@ -25,11 +26,25 @@ def test_ruft_kern_und_single_endpoints():
         assert ep in HTML, f"Endpoint {ep} fehlt im Frontend"
 
 
-def test_export_laedt_per_blob_nicht_per_link():
-    """Ein <a href> schickt den Authorization-Header nicht mit. Bei gesetztem
-    ILLICO_SINGLE_TOKEN liefe der Download sonst in ein 401, das der Nutzer
-    nur als kaputte Datei sieht."""
-    assert "/api/export" in HTML
+def test_export_knopf_ist_verdrahtet_und_laedt_per_blob():
+    """`createObjectURL` allein sagt nichts: der String stand schon vor dem
+    Export-Feature im Markup (downloadText), der Test bestuende auch, wenn
+    der Knopf gar nicht mit doExport() verdrahtet waere oder doExport() ein
+    <a href> benutzte. Deshalb hier explizit: der Knopf ruft doExport() auf,
+    doExport() existiert, und die Checkbox-Kennung, die doExport() ausliest,
+    steht im Markup — erst zusammen belegt das die tatsaechliche Verdrahtung.
+
+    Der Blob-Umweg selbst bleibt Pflicht: ein <a href> schickt den
+    Authorization-Header nicht mit. Bei gesetztem ILLICO_SINGLE_TOKEN liefe
+    der Download sonst in ein 401, das der Nutzer nur als kaputte Datei sieht.
+    """
+    assert 'onclick="doExport()"' in HTML, "Knopf ruft doExport() nicht auf"
+    assert re.search(r"(async\s+)?function\s+doExport\s*\(", HTML), (
+        "Funktion doExport() fehlt"
+    )
+    assert 'id="export-chats"' in HTML, (
+        "Checkbox export-chats fehlt — doExport() liest sie beim Aufruf aus"
+    )
     assert "createObjectURL" in HTML
 
 

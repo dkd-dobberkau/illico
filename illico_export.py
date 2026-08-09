@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import os
+import tempfile
 import typer
 import zipfile
 
@@ -64,8 +65,16 @@ def _ziel_in_data(ziel: Path, data: Path) -> bool:
     ueber os.path.samefile) wird mit data verglichen: das beantwortet
     "ist das dasselbe Verzeichnis?" unabhaengig von der Schreibweise korrekt,
     weil das Betriebssystem selbst entscheidet statt eine Namensregel.
+
+    Der Vorfahren-Lauf arbeitet dafuer auf dem absoluten Pfad: `Path(".").parents`
+    ist leer (kein Tippfehler — bei relativen Pfaden liefert pathlib da schlicht
+    nichts), ein Lauf ueber `ziel.parent.parents` wuerde also bei relativem ziel
+    an der ersten Ebene abbrechen und nie die eigentlichen Vorfahren pruefen.
+    `.resolve()` macht daraus zuerst einen absoluten Pfad, dessen `.parents`
+    tatsaechlich bis zur Dateisystem-Wurzel reicht — unabhaengig davon, ob
+    ziel und data relativ oder absolut uebergeben wurden.
     """
-    vorfahr = ziel.parent
+    vorfahr = ziel.resolve().parent
     while not vorfahr.exists():
         eltern = vorfahr.parent
         if eltern == vorfahr:
@@ -84,10 +93,16 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
     Im Archiv liegt alles unter `illico-data/`, damit ein `unzip` nicht das
     Arbeitsverzeichnis vollschuettet und das Ergebnis direkt einsatzfaehig ist.
 
-    Der Schreibvorgang ist atomar: die ZIP-Datei wird zur `.tmp`-Datei geschrieben
-    und erst bei erfolgreicher Fertigstellung zu `ziel` umbenannt. Fehlt der Export
-    mitten im Schreiben (z.B. unlesbare Quelldatei, voll Festplatte), bleibt
-    keine halbfertige Zieldatei zurück.
+    Der Schreibvorgang ist atomar: die ZIP-Datei wird zu einer eindeutig
+    benannten Temp-Datei geschrieben und erst bei erfolgreicher Fertigstellung
+    zu `ziel` umbenannt. Fehlt der Export mitten im Schreiben (z.B. unlesbare
+    Quelldatei, voll Festplatte), bleibt keine halbfertige Zieldatei zurück
+    und die Temp-Datei wird entfernt.
+
+    Existiert `ziel` bereits, wird es bedingungslos überschrieben — os.replace
+    kennt kein "nicht überschreiben". Der Schutz vor versehentlichem
+    Überschreiben (siehe CLI-Befehl `export`) sitzt ausschließlich beim
+    Aufrufer; wer diese Funktion direkt aufruft, muss selbst vorher prüfen.
     """
     data = Path(data)
     ziel = Path(ziel)
@@ -102,17 +117,35 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
     ziel.parent.mkdir(parents=True, exist_ok=True)
     result = ExportResult(path=ziel)
 
-    # Schreib zur temp-Datei und ersetze atomar bei Erfolg
-    tmp = ziel.with_name(ziel.name + ".tmp")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(data.rglob("*")):
-            if not path.is_file() or _ausgeschlossen(path, data, chats):
-                continue
-            archive.write(path, f"{ARCHIVE_ROOT}/{path.relative_to(data)}")
-            result.files += 1
-            result.bytes_raw += path.stat().st_size
-
-    os.replace(tmp, ziel)
+    # Schreib zur temp-Datei und ersetze atomar bei Erfolg. Der Name muss
+    # unteilbar sein: zwei ueberlappende Laeufe auf dieselbe Zieldatei (z.B.
+    # zwei sich ueberschneidende Cron-Jobs mit dem in der README empfohlenen
+    # festen Dateinamen) duerften sich sonst dieselbe .tmp-Datei teilen — beide
+    # Prozesse schrieben dann verschraenkt in dieselbe Inode, und wer zuerst
+    # mit os.replace fertig ist, meldet faelschlich Erfolg fuer ein Archiv, das
+    # der andere Prozess gerade zerstoert. tempfile.mkstemp() legt die Datei
+    # per O_EXCL atomar und garantiert kollisionsfrei an; dir=ziel.parent haelt
+    # sie im selben Verzeichnis wie ziel, sonst waere os.replace kein atomares
+    # Rename mehr (Dateisystemgrenze).
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{ziel.name}.", suffix=".tmp", dir=ziel.parent)
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(data.rglob("*")):
+                if not path.is_file() or _ausgeschlossen(path, data, chats):
+                    continue
+                archive.write(path, f"{ARCHIVE_ROOT}/{path.relative_to(data)}")
+                result.files += 1
+                result.bytes_raw += path.stat().st_size
+        os.replace(tmp, ziel)
+    except BaseException:
+        # Ohne dieses Aufraeumen bliebe die Temp-Datei bei jedem Fehlschlag
+        # (volle Platte, unlesbare Quelldatei) liegen — unsichtbarer
+        # Plattenverbrauch, der sich bei jedem erneuten Versuch summiert.
+        tmp.unlink(missing_ok=True)
+        raise
     return result
 
 

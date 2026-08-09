@@ -140,6 +140,20 @@ def test_ziel_im_datenverzeichnis_mit_unterschiedlicher_schreibweise(tmp_path: P
         illico_export.write_export(data, ziel)
 
 
+def test_ziel_im_datenverzeichnis_mit_relativem_pfad_wird_abgelehnt(tmp_path, monkeypatch):
+    """Path('.').parents ist leer — ein Vorfahren-Lauf, der bei relativen
+    Pfaden ansetzt statt bei absoluten, verlaesst deshalb den Vorfahren-Lauf
+    bei '.' und prueft dessen Eltern nie. Reproduziert genau den Fall aus dem
+    Abschlussbefund: cwd = illico-data/wiki, Ziel '..' als data, 'backup.zip'
+    als ziel relativ zum cwd — landet unerkannt im Datenverzeichnis."""
+    data = _bestand(tmp_path)
+    wiki = data / "wiki"
+    monkeypatch.chdir(wiki)
+
+    with pytest.raises(ValueError):
+        illico_export.write_export(Path(".."), Path("backup.zip"))
+
+
 def test_ziel_nicht_im_datenverzeichnis_mit_schreibweise_unterschied(tmp_path: Path):
     """Schreibweise-Unterschied allein macht kein Verzeichnis zu einem Sub-Verzeichnis.
 
@@ -172,6 +186,66 @@ def test_ziel_nicht_im_datenverzeichnis_mit_schreibweise_unterschied(tmp_path: P
     result = illico_export.write_export(data, ziel)
     assert result.path == ziel
     assert result.files == 0  # Leer, aber valid
+
+
+import threading
+from unittest.mock import patch
+
+
+def test_gleichzeitige_exporte_teilen_sich_keine_temp_datei(tmp_path: Path):
+    """Zwei parallele Laeufe auf dieselbe Zieldatei (z.B. zwei ueberlappende
+    Cron-Jobs mit dem in der README empfohlenen festen Dateinamen) duerfen
+    keine deterministisch benannte Temp-Datei teilen. Teilen sie sie doch,
+    schreiben beide Prozesse verschraenkt in dieselbe Inode; wer zuerst mit
+    os.replace fertig ist, meldet faelschlich Erfolg fuer ein Archiv, das der
+    andere Prozess gerade zerstoert."""
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "backup.zip"
+
+    tmp_pfade = []
+    orig_zipfile = illico_export.zipfile.ZipFile
+
+    def merkend(pfad, *a, **kw):
+        tmp_pfade.append(Path(pfad))
+        return orig_zipfile(pfad, *a, **kw)
+
+    start = threading.Barrier(2)
+
+    def lauf():
+        start.wait()
+        illico_export.write_export(data, ziel)
+
+    with patch.object(illico_export.zipfile, "ZipFile", side_effect=merkend):
+        t1 = threading.Thread(target=lauf)
+        t2 = threading.Thread(target=lauf)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+    assert len(tmp_pfade) == 2
+    assert tmp_pfade[0] != tmp_pfade[1], (
+        "beide Laeufe haben dieselbe Temp-Datei benutzt — genau die Kollision, "
+        "die zum korrupten Archiv fuehrt"
+    )
+    assert zipfile.is_zipfile(ziel)
+
+
+def test_write_export_raeumt_tmp_datei_bei_fehler_auf(tmp_path: Path):
+    """Scheitert der Export mitten im Schreiben, darf keine .tmp-Datei liegen
+    bleiben — sie waere unsichtbarer Plattenverbrauch."""
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "export.zip"
+    quelldatei = data / "wiki" / "artikel.md"
+    quelldatei.chmod(0o000)
+    try:
+        with pytest.raises(OSError):
+            illico_export.write_export(data, ziel)
+    finally:
+        quelldatei.chmod(0o644)
+
+    assert not list(tmp_path.glob("*.tmp")), "Temp-Datei blieb nach Fehlschlag liegen"
+    assert not ziel.exists()
 
 
 from typer.testing import CliRunner
@@ -255,8 +329,9 @@ def test_cli_meldet_nicht_schreibbares_ziel(tmp_path: Path):
 
 def test_cli_keine_halbfertigen_dateien_bei_fehler_mitten_im_schreiben(tmp_path: Path):
     """Scheitert der Export mitten im Schreiben (z.B. PermissionError bei
-    archive.write()), darf keine halbfertige Zieldatei zurückbleiben. Ein
-    korruptes Archiv ist schlimmer als gar keines."""
+    archive.write()), darf weder eine halbfertige Zieldatei noch eine liegen
+    gebliebene Temp-Datei zurückbleiben. Ein korruptes Archiv ist schlimmer
+    als gar keines, eine vergessene .tmp-Datei unsichtbarer Plattenverbrauch."""
     data = _bestand(tmp_path)
     ziel = tmp_path / "export.zip"
 
@@ -272,5 +347,6 @@ def test_cli_keine_halbfertigen_dateien_bei_fehler_mitten_im_schreiben(tmp_path:
             f"Zieldatei sollte nicht existieren nach Fehler mitten im Schreiben, "
             f"aber existiert: {ziel}"
         )
+        assert not list(tmp_path.glob("*.tmp")), "Temp-Datei blieb nach Fehlschlag liegen"
     finally:
         quelldatei.chmod(0o644)
