@@ -251,3 +251,26 @@ def test_cli_meldet_nicht_schreibbares_ziel(tmp_path: Path):
         assert "✗" in ergebnis.output or "✗" in (ergebnis.stderr or "")
     finally:
         gesperrt.chmod(0o700)
+
+
+def test_cli_keine_halbfertigen_dateien_bei_fehler_mitten_im_schreiben(tmp_path: Path):
+    """Scheitert der Export mitten im Schreiben (z.B. PermissionError bei
+    archive.write()), darf keine halbfertige Zieldatei zurückbleiben. Ein
+    korruptes Archiv ist schlimmer als gar keines."""
+    data = _bestand(tmp_path)
+    ziel = tmp_path / "export.zip"
+
+    # Eine Quelldatei unlesbar machen, um PermissionError während archive.write() zu verursachen
+    quelldatei = data / "wiki" / "artikel.md"
+    quelldatei.chmod(0o000)
+    try:
+        ergebnis = runner.invoke(illico_export.app,
+                                 ["-d", str(data), "-o", str(ziel)])
+
+        assert ergebnis.exit_code == 1, f"Befehl sollte fehlschlagen, war: {ergebnis.output}"
+        assert not ziel.exists(), (
+            f"Zieldatei sollte nicht existieren nach Fehler mitten im Schreiben, "
+            f"aber existiert: {ziel}"
+        )
+    finally:
+        quelldatei.chmod(0o644)

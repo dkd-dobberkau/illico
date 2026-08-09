@@ -83,6 +83,11 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
 
     Im Archiv liegt alles unter `illico-data/`, damit ein `unzip` nicht das
     Arbeitsverzeichnis vollschuettet und das Ergebnis direkt einsatzfaehig ist.
+
+    Der Schreibvorgang ist atomar: die ZIP-Datei wird zur `.tmp`-Datei geschrieben
+    und erst bei erfolgreicher Fertigstellung zu `ziel` umbenannt. Fehlt der Export
+    mitten im Schreiben (z.B. unlesbare Quelldatei, voll Festplatte), bleibt
+    keine halbfertige Zieldatei zurück.
     """
     data = Path(data)
     ziel = Path(ziel)
@@ -96,13 +101,18 @@ def write_export(data: Path, ziel: Path, chats: bool = True) -> ExportResult:
 
     ziel.parent.mkdir(parents=True, exist_ok=True)
     result = ExportResult(path=ziel)
-    with zipfile.ZipFile(ziel, "w", zipfile.ZIP_DEFLATED) as archive:
+
+    # Schreib zur temp-Datei und ersetze atomar bei Erfolg
+    tmp = ziel.with_name(ziel.name + ".tmp")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(data.rglob("*")):
             if not path.is_file() or _ausgeschlossen(path, data, chats):
                 continue
             archive.write(path, f"{ARCHIVE_ROOT}/{path.relative_to(data)}")
             result.files += 1
             result.bytes_raw += path.stat().st_size
+
+    os.replace(tmp, ziel)
     return result
 
 
