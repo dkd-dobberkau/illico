@@ -127,6 +127,32 @@ A repeat run over unchanged files costs nothing: Illico remembers in
 `--label`. A changed file is picked up automatically; `--fresh` only drops
 the entries for the current label, not the whole file.
 
+### Exporting a collection
+
+```bash
+illico-export -o backup.zip          # or without -o: illico-export-<timestamp>.zip
+illico-export -o backup.zip --no-chats
+```
+
+The web interface has a **Bestand exportieren** button under "Verwalten".
+
+The archive holds the entire data directory: `raw/`, `wiki/`, the distillates
+under `distill/`, the graph and the manifests. That is deliberate — every
+distillate is a paid model call, and without `_documents.json` and
+`_inventory.json` the next compile run rebuilds everything. Chat histories are
+included by default; `--no-chats` leaves them out when the archive is meant to
+be handed on.
+
+Restoring needs no separate command — the archive unpacks 1:1:
+
+```bash
+unzip backup.zip -d /target/directory
+```
+
+An export taken while `ingest` or `compile` is running is not a consistent
+snapshot. The web interface warns about this; the CLI runs in its own process
+and does not know about the server's jobs.
+
 ### Multilingual wikis
 
 `--lang` filters the raw pages by language (frontmatter `language:`, falling back

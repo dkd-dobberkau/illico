@@ -131,6 +131,33 @@ extrahiert hat. Ändert sich eine Datei, wird sie automatisch neu gelesen;
 `--fresh` verwirft dabei nur die Einträge des aktuellen Labels, nicht die
 ganze Datei.
 
+### Bestand exportieren
+
+```bash
+illico-export -o backup.zip          # oder ohne -o: illico-export-<zeitstempel>.zip
+illico-export -o backup.zip --no-chats
+```
+
+Im Web-Interface gibt es dafür unter „Verwalten" den Knopf **Bestand
+exportieren**.
+
+Das Archiv enthält das komplette Datenverzeichnis: `raw/`, `wiki/`, die
+Destillate unter `distill/`, den Graphen und die Manifeste. Das ist Absicht —
+jedes Destillat ist ein bezahlter Modellaufruf, und ohne `_documents.json` und
+`_inventory.json` baut der nächste Compile-Lauf alles neu. Chatverläufe sind
+standardmäßig dabei; `--no-chats` lässt sie weg, wenn das Archiv weitergegeben
+werden soll.
+
+Zurückspielen geht ohne eigenen Befehl — das Archiv entpackt sich 1:1:
+
+```bash
+unzip backup.zip -d /ziel/verzeichnis
+```
+
+Ein Export während eines laufenden `ingest` oder `compile` ist kein
+konsistenter Snapshot. Das Web-Interface warnt in dem Fall; die CLI läuft in
+einem eigenen Prozess und kennt die Jobs des Servers nicht.
+
 ### Mehrsprachige Wikis
 
 `--lang` filtert die Rohseiten nach Sprache (Frontmatter `language:`, Fallback
